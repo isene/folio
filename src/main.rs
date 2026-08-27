@@ -174,6 +174,10 @@ struct App {
     img: Option<glow::Display>,
     /// Which image is on screen, so an unchanged page is not re-sent.
     shown: Option<String>,
+    /// Pages the terminal is still holding. Kept small: kitty frees an
+    /// image the moment its last placement goes, and re-sending a slide is
+    /// the whole cost of turning a page.
+    live: Vec<String>,
     status: Option<(String, u8)>,
     needle: String,
     hits: Vec<usize>,
@@ -200,7 +204,7 @@ impl App {
             right: Pane::new(1, 2, 1, 1, TEXT_BG_FG, 0),
             footer: Pane::new(1, rows, cols, 1, 248, 236),
             cols, rows,
-            img: None, shown: None, status: None,
+            img: None, shown: None, live: Vec::new(), status: None,
             needle: String::new(), hits: Vec::new(), hit: 0,
             count: String::new(), g_pending: false,
         };
@@ -244,12 +248,27 @@ impl App {
         }
     }
 
+    /// The cached page images either side of this one, by path. What is
+    /// worth keeping alive in the terminal for an instant page turn.
+    fn neighbours(&self, px: u32) -> Vec<String> {
+        let mut v = Vec::new();
+        for p in [self.page.wrapping_sub(1), self.page + 1] {
+            if p < self.pages {
+                if let Some(f) = pdf::cached_page(&self.path, p, px) {
+                    v.push(f.to_string_lossy().to_string());
+                }
+            }
+        }
+        v
+    }
+
     fn clear_image(&mut self) {
         if let Some(ref mut d) = self.img {
             d.clear(1, 2, self.cols, self.rows.saturating_sub(2), self.cols, self.rows);
         }
         self.img = None;
         self.shown = None;
+        self.live.clear();
     }
 
     fn render(&mut self) {
@@ -269,15 +288,14 @@ impl App {
         self.header.refresh();
 
         if self.mode != Mode::Page {
-            let body = self.page_text();
-            let lines: Vec<&str> = body.lines().collect();
+            let w = self.left.w.saturating_sub(1) as usize;
+            let lines = wrap(self.page_text(), w.max(8));
             let h = self.left.h as usize;
             let start = self.scroll.min(lines.len().saturating_sub(1));
             let end = (start + h).min(lines.len());
-            let w = self.left.w as usize;
             let mut out = String::new();
-            for l in &lines[start..end] {
-                let t: String = l.chars().take(w).collect();
+            for t in &lines[start..end] {
+                let t = t.as_str();
                 // A hit on this page is worth seeing in the text too.
                 if !self.needle.is_empty()
                     && t.to_lowercase().contains(&self.needle.to_lowercase()) {
@@ -307,14 +325,27 @@ impl App {
                             let d = glow::Display::new();
                             if d.supported() { self.img = Some(d); }
                         }
+                        // Paint the new page straight over the old one. The
+                        // old placement is dropped afterwards, so the screen
+                        // is never blank waiting for the next slide: clearing
+                        // first also frees the image server-side, which forces
+                        // a full re-transmit of every page you return to.
+                        let keep = self.neighbours(px);
                         if let Some(ref mut d) = self.img {
-                            d.clear(x, y, w, h, self.cols, self.rows);
                             d.show(&key, x, y, w, h);
-                            self.shown = Some(key);
+                            for old in self.live.clone() {
+                                if old != key && !keep.contains(&old) {
+                                    d.forget_path(&old);
+                                }
+                            }
                         }
+                        self.live.retain(|p| *p == key || keep.contains(p));
+                        if !self.live.contains(&key) { self.live.push(key.clone()); }
+                        self.shown = Some(key);
                     }
-                    // Only now, with the page already up, warm the neighbours.
-                    pdf::prefetch(&self.path, self.page, self.pages, px);
+                    // Only now, with the page already up, warm the neighbours,
+                    // and off this thread so paging never waits on mutool.
+                    pdf::prefetch_bg(&self.path, self.page, self.pages, px);
                 }
                 None => {
                     self.right.set_text(&style::fg("\n  mutool could not render this page.", DIM_FG));
@@ -376,7 +407,8 @@ impl App {
     }
 
     fn scroll_by(&mut self, delta: i32) {
-        let lines = self.page_text().lines().count();
+        let w = self.left.w.saturating_sub(1).max(8) as usize;
+        let lines = wrap(self.page_text(), w).len();
         let h = self.left.h as usize;
         let max = lines.saturating_sub(h);
         let next = self.scroll as i32 + delta;
@@ -385,7 +417,7 @@ impl App {
         if next < 0 {
             if self.page > 0 {
                 self.goto(self.page - 1);
-                let l = self.page_text().lines().count();
+                let l = wrap(self.page_text(), w).len();
                 self.scroll = l.saturating_sub(h);
             }
             return;
@@ -574,6 +606,45 @@ impl App {
     }
 }
 
+/// Break `text` to `width`, on spaces where there are any. Indentation is
+/// kept on the first line of each source line, because `pdftotext -layout`
+/// uses it to stand columns side by side, and a slide's text is nothing but
+/// columns.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.chars().count() <= width {
+            out.push(line.to_string());
+            continue;
+        }
+        let indent: String = line.chars().take_while(|c| *c == ' ').collect();
+        let indent = if indent.chars().count() + 8 < width { indent } else { String::new() };
+        let mut cur = String::new();
+        for word in line.split_whitespace() {
+            let need = if cur.is_empty() { word.chars().count() }
+                       else { cur.chars().count() + 1 + word.chars().count() };
+            if !cur.is_empty() && need > width {
+                out.push(std::mem::take(&mut cur));
+                cur.push_str(&indent);
+            }
+            if !cur.is_empty() && !cur.ends_with(' ') { cur.push(' '); }
+            // A single word longer than the pane still has to go somewhere.
+            if word.chars().count() > width {
+                let mut rest = word.chars().collect::<Vec<_>>();
+                while rest.len() > width {
+                    let head: String = rest.drain(..width).collect();
+                    out.push(head);
+                }
+                cur.push_str(&rest.into_iter().collect::<String>());
+            } else {
+                cur.push_str(word);
+            }
+        }
+        if !cur.trim().is_empty() { out.push(cur); }
+    }
+    out
+}
+
 /// `~/.folio/index`: one `path<TAB>cachekey` per PDF, written by --index.
 fn index_path() -> PathBuf { pdf::folio_dir().join("index") }
 
@@ -760,6 +831,31 @@ mod tests {
         let raw = std::fs::read_to_string(&file).unwrap();
         assert_eq!(raw.lines().count(), 2, "one line per document, not one per save");
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn long_lines_wrap_instead_of_losing_their_ends() {
+        // A slide's text layer is far wider than a half-width pane. Cutting
+        // it drops the end of every sentence, which is what the reader is
+        // there for.
+        let line = "Uke 35 av 13-42, seks uker igjen. Prosjektet ble forlenget                     fire uker i august; sluttrapport 16. oktober.";
+        let w = 40;
+        let out = wrap(line, w);
+        assert!(out.len() > 1, "it wrapped");
+        for l in &out { assert!(l.chars().count() <= w, "{:?} fits in {}", l, w); }
+        let joined = out.join(" ");
+        assert!(joined.contains("sluttrapport 16. oktober."), "the end survives");
+
+        // Short lines are left exactly as they are.
+        assert_eq!(wrap("short", 40), vec!["short"]);
+        // Indentation is kept, because -layout uses it to stand columns up.
+        let col = format!("{}{}", " ".repeat(8), "a ".repeat(40));
+        assert!(wrap(&col, 30)[1].starts_with("        "), "the indent carries");
+        // A word longer than the pane still has to appear somewhere.
+        let long = "x".repeat(100);
+        let out = wrap(&long, 20);
+        assert_eq!(out.iter().map(|l| l.chars().count()).sum::<usize>(), 100);
+        for l in &out { assert!(l.chars().count() <= 20); }
     }
 
     #[test]

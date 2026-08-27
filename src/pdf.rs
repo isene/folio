@@ -114,15 +114,29 @@ pub fn render_page(path: &Path, page: usize, height_px: u32) -> Option<PathBuf> 
     if status.success() && out.exists() { Some(out) } else { None }
 }
 
+/// The cache file for a page, if it has already been rendered.
+pub fn cached_page(path: &Path, page: usize, height_px: u32) -> Option<PathBuf> {
+    let out = cache_dir().join(format!("{}-p{}-h{}.png", key(path), page, height_px));
+    if out.exists() { Some(out) } else { None }
+}
+
 /// Render the pages either side of the one being read, so paging forward is
-/// instant. Only ever called after the current page is already on screen.
-pub fn prefetch(path: &Path, page: usize, pages: usize, height_px: u32) {
-    for p in [page + 1, page.wrapping_sub(1)] {
-        if p < pages {
-            let out = cache_dir().join(format!("{}-p{}-h{}.png", key(path), p, height_px));
-            if !out.exists() { let _ = render_page(path, p, height_px); }
+/// instant. On its own thread, because mutool takes about a tenth of a second
+/// and the reader must not wait for it. One at a time: paging fast through a
+/// deck would otherwise start a thread per keypress.
+pub fn prefetch_bg(path: &Path, page: usize, pages: usize, height_px: u32) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if BUSY.swap(true, Ordering::SeqCst) { return; }
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        for p in [page + 1, page.wrapping_sub(1)] {
+            if p < pages && cached_page(&path, p, height_px).is_none() {
+                let _ = render_page(&path, p, height_px);
+            }
         }
-    }
+        BUSY.store(false, Ordering::SeqCst);
+    });
 }
 
 /// The source a PDF was built from, if it is sitting next to it under the
