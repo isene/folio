@@ -326,7 +326,7 @@ impl App {
         match self.status.take() {
             Some((msg, c)) => self.footer.say(&style::fg(&format!(" {}", msg), c)),
             None => self.footer.say(
-                " q:Quit  m:Mode  j/k:Scroll  Space/b:Page  10g:Goto  /:Find  e:Edit  y:Yank  w/W:Divider  s:Corpus  ?:Help"),
+                " q:Quit  F1/F2/F3:Mode  j/k:Scroll  Space/b:Page  10g:Goto  /:Find  e:Edit  y:Yank  w/W:Divider  s:Corpus  ?:Help"),
         }
     }
 
@@ -543,7 +543,8 @@ impl App {
 
     fn help(&mut self) {
         let text = format!("\n{}\n\n\
-  m M          cycle the modes: text, page, split\n\
+  F1 F2 F3     text / page / split\n\
+  m M          cycle the modes forward / back\n\
   j k ↑ ↓      scroll, turning the page at either end\n\
   Space b      next / previous page\n\
   gg G         first / last page\n\
@@ -679,9 +680,15 @@ fn main() {
         match k {
             "q" | "Q" | "ESC" => break,
             "RESIZE" => { app.clear_image(); app.layout(); Crust::clear_screen(); }
-            "m" | "M" => {
+            "m" | "M" | "F1" | "F2" | "F3" => {
                 app.clear_image();
-                app.mode = if k == "m" { app.mode.next() } else { app.mode.next().next() };
+                app.mode = match k {
+                    "F1" => Mode::Text,
+                    "F2" => Mode::Page,
+                    "F3" => Mode::Split,
+                    "m"  => app.mode.next(),
+                    _    => app.mode.next().next(),
+                };
                 app.layout();
                 Crust::clear_screen();
             }

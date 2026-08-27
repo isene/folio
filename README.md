@@ -10,7 +10,7 @@ A PDF is two documents in one: the words, and the page they were set on. Most re
 
 ## Features
 
-- **Three modes**, cycled with `m`: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
+- **Three modes** on `F1` `F2` `F3`, or cycled with `m`: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
 - **Edit the real document**: `e` opens the `.md` or `.tex` sitting beside the PDF, rebuilds it on save, and reloads the page. A small change is a real edit, not a patch painted over the page.
 - **Corpus search**: `s` searches every indexed PDF, not just the open one, and opens the document on the page that carries the phrase.
 - **Quote with a citation**: `y` copies the page's text with the file name and page number attached.
@@ -33,7 +33,8 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 
 | Key | Action |
 |-----|--------|
-| `m` `M` | cycle the modes: text, page, split |
+| `F1` `F2` `F3` | text / page / split |
+| `m` `M` | cycle the modes forward / back |
 | `j` `k` `↑` `↓` | scroll, turning the page at either end |
 | `Space` `b` | next / previous page |
 | `gg` `G` | first / last page |
