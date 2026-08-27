@@ -29,6 +29,18 @@ cp target/release/folio ~/.local/bin/
 
 Run `folio somefile.pdf`, or run it bare and pick up where you left off.
 
+To make it the system PDF reader, so file managers and browsers hand PDFs to
+it, install the desktop file that ships with this repo:
+
+```bash
+cp folio.desktop ~/.local/share/applications/
+xdg-mime default folio.desktop application/pdf
+```
+
+It declares `Terminal=true`, which is how a TUI program advertises itself. A
+terminal file manager that reads the desktop entry, [pointer](https://github.com/isene/pointer)
+among them, then gives folio the terminal instead of launching it detached.
+
 Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-tools) for page images.
 
 ## Key Bindings

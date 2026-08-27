@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=folio
+GenericName=PDF Reader
+Comment=Read a PDF as text, as pages, or both at once
+Exec=folio %f
+Icon=folio
+Terminal=true
+Categories=Office;Viewer;
+MimeType=application/pdf;
+NoDisplay=false
