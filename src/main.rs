@@ -248,20 +248,6 @@ impl App {
         }
     }
 
-    /// The cached page images either side of this one, by path. What is
-    /// worth keeping alive in the terminal for an instant page turn.
-    fn neighbours(&self, px: u32) -> Vec<String> {
-        let mut v = Vec::new();
-        for p in [self.page.wrapping_sub(1), self.page + 1] {
-            if p < self.pages {
-                if let Some(f) = pdf::cached_page(&self.path, p, px) {
-                    v.push(f.to_string_lossy().to_string());
-                }
-            }
-        }
-        v
-    }
-
     fn clear_image(&mut self) {
         if let Some(ref mut d) = self.img {
             d.clear(1, 2, self.cols, self.rows.saturating_sub(2), self.cols, self.rows);
@@ -325,23 +311,32 @@ impl App {
                             let d = glow::Display::new();
                             if d.supported() { self.img = Some(d); }
                         }
-                        // Paint the new page straight over the old one. The
-                        // old placement is dropped afterwards, so the screen
-                        // is never blank waiting for the next slide: clearing
-                        // first also frees the image server-side, which forces
-                        // a full re-transmit of every page you return to.
-                        let keep = self.neighbours(px);
+                        // Paint the new page straight over the old one, then
+                        // drop the old placement. That order is the whole
+                        // point: clearing first leaves the screen blank for
+                        // as long as the transmit takes.
+                        //
+                        // Exactly one page stays placed. Keeping a neighbour
+                        // alive to save a re-transmit does not work: the
+                        // terminal frees an image the moment its last
+                        // placement goes, so a live image is a VISIBLE one,
+                        // and two placements on the same cells at the same
+                        // depth let the old page cover the new one.
+                        let mut placed = false;
                         if let Some(ref mut d) = self.img {
-                            d.show(&key, x, y, w, h);
-                            for old in self.live.clone() {
-                                if old != key && !keep.contains(&old) {
-                                    d.forget_path(&old);
+                            placed = d.show(&key, x, y, w, h);
+                            if placed {
+                                for old in std::mem::take(&mut self.live) {
+                                    if old != key { d.forget_path(&old); }
                                 }
                             }
                         }
-                        self.live.retain(|p| *p == key || keep.contains(p));
-                        if !self.live.contains(&key) { self.live.push(key.clone()); }
-                        self.shown = Some(key);
+                        // A placement that failed must not be remembered, or
+                        // the page it was meant to show never gets another try.
+                        if placed {
+                            self.live = vec![key.clone()];
+                            self.shown = Some(key);
+                        }
                     }
                     // Only now, with the page already up, warm the neighbours,
                     // and off this thread so paging never waits on mutool.
