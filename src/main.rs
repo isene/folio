@@ -60,6 +60,10 @@ struct Config {
     mode: Mode,
     /// Share of the width the text pane takes in Split, in percent.
     split: u16,
+    /// 0 none, 1 the page pane, 2 both, 3 the text pane. Same four states
+    /// pointer cycles, and the same key.
+    border: u16,
+    border_fg: u16,
     editor: String,
     build_tex: String,
     build_md: String,
@@ -73,6 +77,8 @@ impl Config {
         let mut c = Config {
             mode: Mode::Text,
             split: 50,
+            border: 0,
+            border_fg: 240,
             editor: std::env::var("EDITOR").unwrap_or_else(|_| "scribe".into()),
             // Twice, because one pass leaves every cross-reference unresolved.
             build_tex: "pdflatex -interaction=nonstopmode {src}".into(),
@@ -89,6 +95,8 @@ impl Config {
             match k.trim() {
                 "mode" => c.mode = Mode::parse(&v),
                 "split" => if let Ok(n) = v.parse() { c.split = n },
+                "border" => if let Ok(n) = v.parse::<u16>() { c.border = n % 4 },
+                "border_fg" => if let Ok(n) = v.parse() { c.border_fg = n },
                 "editor" => c.editor = v,
                 "build_tex" => c.build_tex = v,
                 "build_md" => c.build_md = v,
@@ -102,21 +110,21 @@ impl Config {
 
 /// Write one setting back, leaving every other line of the config, and any
 /// comment in it, exactly as the user wrote it.
-fn save_split(split: u16) {
+fn save_setting(key: &str, value: &str) {
     let file = pdf::folio_dir().join("config");
     let old = std::fs::read_to_string(&file).unwrap_or_default();
     let mut out = String::new();
     let mut seen = false;
     for line in old.lines() {
-        if line.trim_start().starts_with("split") && line.contains('=') {
-            out.push_str(&format!("split = {}\n", split));
+        if line.trim_start().starts_with(key) && line.contains('=') {
+            out.push_str(&format!("{} = {}\n", key, value));
             seen = true;
         } else {
             out.push_str(line);
             out.push('\n');
         }
     }
-    if !seen { out.push_str(&format!("split = {}\n", split)); }
+    if !seen { out.push_str(&format!("{} = {}\n", key, value)); }
     let _ = std::fs::create_dir_all(pdf::folio_dir());
     let _ = std::fs::write(file, out);
 }
@@ -138,6 +146,28 @@ fn saved_page_in(file: &Path, path: &Path) -> usize {
         }
     }
     0
+}
+
+/// Documents read before, newest first. save_page rewrites the file with the
+/// current document last, so reading it backwards is the recent list.
+fn recent_documents() -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(state_file()) else { return Vec::new() };
+    let mut v: Vec<PathBuf> = text.lines()
+        .filter_map(|l| l.split_once('\t').map(|(p, _)| PathBuf::from(p)))
+        .filter(|p| p.exists())
+        .collect();
+    v.reverse();
+    v
+}
+
+/// `~/x` and `$HOME/x` are what a person types; neither is a path yet.
+fn expand(input: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let t = input.trim();
+    if let Some(rest) = t.strip_prefix("~/") { return PathBuf::from(format!("{}/{}", home, rest)); }
+    if t == "~" { return PathBuf::from(home); }
+    if let Some(rest) = t.strip_prefix("$HOME/") { return PathBuf::from(format!("{}/{}", home, rest)); }
+    PathBuf::from(t)
 }
 
 fn save_page_in(file: &Path, path: &Path, page: usize) {
@@ -218,21 +248,37 @@ impl App {
         let (cols, rows) = Crust::terminal_size();
         self.cols = cols;
         self.rows = rows;
-        let body_h = rows.saturating_sub(2);
         self.header = Pane::new(1, 1, cols, 1, 255, 236);
         self.footer = Pane::new(1, rows, cols, 1, 248, 236);
         self.header.scroll = false;
         self.footer.scroll = false;
-        let lw = match self.mode {
-            Mode::Text => cols,
-            Mode::Page => 0,
-            Mode::Split => (cols as u32 * self.cfg.split as u32 / 100) as u16,
+
+        // The border is drawn outside the pane, into a gap that is reserved
+        // whether or not it is switched on. Row 2 and row rows-1 are that
+        // gap, as are column 1 and column cols, so turning a border on and
+        // off never moves a word of text.
+        let y = 3;
+        let h = rows.saturating_sub(4).max(1);
+        let text_border = matches!(self.cfg.border, 2 | 3);
+        let page_border = matches!(self.cfg.border, 1 | 2);
+
+        let (lx, lw, rx, rw) = match self.mode {
+            Mode::Text => (2, cols.saturating_sub(2).max(1), cols, 1),
+            Mode::Page => (cols, 1, 2, cols.saturating_sub(2).max(1)),
+            Mode::Split => {
+                let split = (cols as u32 * self.cfg.split as u32 / 100) as u16;
+                (2, split.saturating_sub(1).max(1),
+                 split + 3, cols.saturating_sub(split).saturating_sub(3).max(1))
+            }
         };
-        self.left = Pane::new(1, 2, lw.max(1), body_h, TEXT_BG_FG, 0);
+        self.left = Pane::new(lx, y, lw, h, TEXT_BG_FG, 0);
         self.left.scroll = false;
-        let rx = lw + 1;
-        self.right = Pane::new(rx.max(1), 2, cols.saturating_sub(lw).max(1), body_h, TEXT_BG_FG, 0);
+        self.left.border = text_border && self.mode != Mode::Page;
+        self.left.border_fg = Some(self.cfg.border_fg);
+        self.right = Pane::new(rx, y, rw, h, TEXT_BG_FG, 0);
         self.right.scroll = false;
+        self.right.border = page_border && self.mode != Mode::Text;
+        self.right.border_fg = Some(self.cfg.border_fg);
     }
 
     fn page_text(&self) -> &str {
@@ -243,8 +289,7 @@ impl App {
     fn image_box(&self) -> Option<(u16, u16, u16, u16)> {
         match self.mode {
             Mode::Text => None,
-            Mode::Page => Some((1, 2, self.cols, self.rows.saturating_sub(2))),
-            Mode::Split => Some((self.right.x, self.right.y, self.right.w, self.right.h)),
+            _ => Some((self.right.x, self.right.y, self.right.w, self.right.h)),
         }
     }
 
@@ -338,6 +383,7 @@ impl App {
                             self.shown = Some(key);
                         }
                     }
+                    if self.right.border { self.right.border_refresh(); }
                     // Only now, with the page already up, warm the neighbours,
                     // and off this thread so paging never waits on mutool.
                     pdf::prefetch_bg(&self.path, self.page, self.pages, px);
@@ -349,11 +395,17 @@ impl App {
             }
         }
 
-        match self.status.take() {
-            Some((msg, c)) => self.footer.say(&style::fg(&format!(" {}", msg), c)),
-            None => self.footer.say(
-                " q:Quit  F1/F2/F3:Mode  j/k:Scroll  Space/b:Page  10g:Goto  /:Find  e:Edit  y:Yank  w/W:Divider  s:Corpus  ?:Help"),
-        }
+        // Keys on the left, version on the right, as in every other app here.
+        let left = match self.status.take() {
+            Some((msg, c)) => style::fg(&format!(" {}", msg), c),
+            None => style::fg(
+                " q:Quit  F1/F2/F3:Mode  j/k:Scroll  Space/b:Page  10g:Goto  /:Find  e:Edit  y/Y:Yank  w/W:Divider  s:Corpus  ?:Help",
+                DIM_FG),
+        };
+        let version = format!("folio v{} ", VERSION);
+        let pad = (self.cols as usize)
+            .saturating_sub(crust::display_width(&left) + version.len());
+        self.footer.say(&format!("{}{}{}", left, " ".repeat(pad), style::fg(&version, DIM_FG)));
     }
 
     fn set_status(&mut self, msg: &str, c: u8) { self.status = Some((msg.to_string(), c)); }
@@ -368,7 +420,7 @@ impl App {
         }
         let next = if wider { self.cfg.split + 5 } else { self.cfg.split.saturating_sub(5) };
         self.cfg.split = next.clamp(20, 80);
-        save_split(self.cfg.split);
+        save_setting("split", &self.cfg.split.to_string());
         self.clear_image();
         self.layout();
         Crust::clear_screen();
@@ -525,6 +577,34 @@ impl App {
         self.clear_image();
     }
 
+    /// The document's own path, for pasting into a message or a command.
+    /// Swap the open document for another, keeping folio running.
+    fn open_another(&mut self) {
+        let raw = self.footer.ask_with_bg("open: ", "", 17);
+        if raw.trim().is_empty() { return; }
+        let p = expand(&raw);
+        if !p.exists() {
+            self.set_status(&format!("no such file: {}", p.display()), 196);
+            return;
+        }
+        save_page(&self.path, self.page);
+        self.clear_image();
+        self.path = p;
+        self.page = saved_page(&self.path);
+        self.scroll = 0;
+        self.needle.clear();
+        self.hits.clear();
+        self.reload();
+        Crust::clear_screen();
+    }
+
+    fn yank_name(&mut self) {
+        let p = std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
+        let p = p.to_string_lossy().to_string();
+        crust::clipboard_copy(&p, "clipboard");
+        self.set_status(&format!("yanked {}", p), 46);
+    }
+
     fn yank(&mut self) {
         let name = self.path.file_name().map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -587,9 +667,11 @@ impl App {
   10g          go to page 10\n\
   / n N        find in this document, next, previous\n\
   s            find across every indexed document\n\
+  o            open another document\n\
   e            edit: the source if there is one, else a text sidecar\n\
-  y            yank this page's text with a citation\n\
+  y Y          yank this page with a citation / the document's path\n\
   w W          widen / narrow the text pane in split mode\n\
+  Ctrl-B       borders: none, page, both, text\n\
   Ctrl-W       write the whole text beside the PDF\n\
   q            quit\n\n\
 {}\n\
@@ -607,6 +689,60 @@ impl App {
         self.footer.say(" any key to go back");
         let _ = Input::getchr(None);
         self.layout();
+    }
+}
+
+/// Pick a document with nothing on the command line. Shows what you read
+/// last, because that is nearly always what you want, and takes a path for
+/// anything else. None means the user quit.
+fn choose_document(cols: u16, rows: u16) -> Option<PathBuf> {
+    let recent = recent_documents();
+    let mut body = Pane::new(2, 3, cols.saturating_sub(2), rows.saturating_sub(4), TEXT_BG_FG, 0);
+    body.scroll = false;
+    let mut head = Pane::new(1, 1, cols, 1, 255, 236);
+    head.scroll = false;
+    let mut foot = Pane::new(1, rows, cols, 1, 248, 236);
+    foot.scroll = false;
+    loop {
+        head.set_text(&format!(" FOLIO v{}  no document open", VERSION));
+        head.refresh();
+        let mut t = String::from("\n");
+        if recent.is_empty() {
+            t.push_str(&style::bold("  Nothing read yet.\n\n"));
+            t.push_str(&style::fg("  o   open a document by path\n", DIM_FG));
+        } else {
+            t.push_str(&style::bold("  Where you left off\n\n"));
+            for (i, p) in recent.iter().take(9).enumerate() {
+                let name = p.file_name().map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let dir = p.parent().map(|d| d.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                t.push_str(&format!("  {}  {}\n     {}\n",
+                    style::fg(&(i + 1).to_string(), 220), name, style::fg(&dir, DIM_FG)));
+            }
+            t.push_str(&style::fg("\n  1-9 to open, o for a path, q to quit\n", DIM_FG));
+        }
+        body.set_text(&t);
+        body.full_refresh();
+        foot.say(&style::fg(" 1-9:Open  o:Path  q:Quit", DIM_FG));
+
+        let key = Input::getchr(None).unwrap_or_default();
+        match key.as_str() {
+            "q" | "Q" | "ESC" => return None,
+            "o" | "O" | "ENTER" => {
+                let raw = foot.ask_with_bg("open: ", "", 17);
+                if raw.trim().is_empty() { continue; }
+                let p = expand(&raw);
+                if p.exists() { return Some(p); }
+                foot.say(&style::fg(&format!(" no such file: {}", p.display()), 196));
+                let _ = Input::getchr(None);
+            }
+            k if k.len() == 1 && k.chars().next().unwrap().is_ascii_digit() => {
+                let n = k.parse::<usize>().unwrap_or(0);
+                if n >= 1 && n <= recent.len().min(9) { return Some(recent[n - 1].clone()); }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -724,18 +860,28 @@ fn main() {
         i += 1;
     }
 
-    let Some(path) = file else {
-        eprintln!("folio: give it a PDF (folio --help)");
-        std::process::exit(1);
-    };
-    if !path.exists() {
-        eprintln!("folio: no such file: {}", path.display());
-        std::process::exit(1);
+    if let Some(ref p) = file {
+        if !p.exists() {
+            eprintln!("folio: no such file: {}", p.display());
+            std::process::exit(1);
+        }
     }
 
     Crust::init();
     Crust::set_app_identity("Folio");
     Crust::clear_screen();
+    // Bare `folio` is how the suite launcher starts it, so it opens on what
+    // you were reading rather than complaining about a missing argument.
+    let path = match file {
+        Some(p) => p,
+        None => {
+            let (cols, rows) = Crust::terminal_size();
+            match choose_document(cols, rows) {
+                Some(p) => { Crust::clear_screen(); p }
+                None => { Crust::cleanup(); return; }
+            }
+        }
+    };
     let mut app = App::new(path);
 
     loop {
@@ -784,8 +930,17 @@ fn main() {
             "n" => app.next_hit(false),
             "N" => app.next_hit(true),
             "s" => app.corpus(),
+            "o" => app.open_another(),
             "e" => app.edit(),
             "y" => app.yank(),
+            "Y" => app.yank_name(),
+            "C-B" => {
+                app.cfg.border = (app.cfg.border + 1) % 4;
+                save_setting("border", &app.cfg.border.to_string());
+                app.clear_image();
+                app.layout();
+                Crust::clear_screen();
+            }
             "w" => app.divider(true),
             "W" => app.divider(false),
             "C-W" => app.write_text(),
@@ -860,6 +1015,46 @@ mod tests {
         let out = wrap(&long, 20);
         assert_eq!(out.iter().map(|l| l.chars().count()).sum::<usize>(), 100);
         for l in &out { assert!(l.chars().count() <= 20); }
+    }
+
+    #[test]
+    fn a_typed_path_becomes_a_real_one() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert_eq!(expand("~/a.pdf"), PathBuf::from(format!("{}/a.pdf", home)));
+        assert_eq!(expand("$HOME/a.pdf"), PathBuf::from(format!("{}/a.pdf", home)));
+        assert_eq!(expand("  /tmp/a.pdf "), PathBuf::from("/tmp/a.pdf"));
+        assert_eq!(expand("a.pdf"), PathBuf::from("a.pdf"));
+        // A tilde that is not a home prefix is left alone.
+        assert_eq!(expand("~weird/a.pdf"), PathBuf::from("~weird/a.pdf"));
+    }
+
+    #[test]
+    fn recents_come_back_newest_first() {
+        let tmp = std::env::temp_dir().join("folio-recent-test");
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("state");
+        // Three real files, saved in order. save_page puts the newest last.
+        let mut made = Vec::new();
+        for n in ["one", "two", "three"] {
+            let p = tmp.join(format!("{}.pdf", n));
+            std::fs::write(&p, b"x").unwrap();
+            save_page_in(&file, &p, 1);
+            made.push(p);
+        }
+        let text = std::fs::read_to_string(&file).unwrap();
+        let order: Vec<&str> = text.lines()
+            .filter_map(|l| l.split_once('\t').map(|(p, _)| p)).collect();
+        assert_eq!(order.len(), 3);
+        assert!(order[2].ends_with("three.pdf"), "newest is written last");
+        // Reading it backwards is the recent list, and a file that has since
+        // been deleted drops out.
+        std::fs::remove_file(&made[2]).unwrap();
+        let alive: Vec<&str> = order.iter().rev()
+            .filter(|p| Path::new(p).exists()).copied().collect();
+        assert_eq!(alive.len(), 2);
+        assert!(alive[0].ends_with("two.pdf"));
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

@@ -27,6 +27,8 @@ cargo build --release
 cp target/release/folio ~/.local/bin/
 ```
 
+Run `folio somefile.pdf`, or run it bare and pick up where you left off.
+
 Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-tools) for page images.
 
 ## Key Bindings
@@ -42,8 +44,10 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 | `/` `n` `N` | find in this document, next match, previous |
 | `s` | find across every indexed document |
 | `e` | edit the source if there is one, else a text sidecar |
-| `y` | yank this page's text with a citation |
+| `y` `Y` | yank this page with a citation / the document's path |
+| `o` | open another document |
 | `w` `W` | widen / narrow the text pane in split mode, as in pointer |
+| `Ctrl-B` | borders: none, page pane, both, text pane |
 | `Ctrl-W` | write the whole text beside the PDF |
 | `?` | help |
 | `q` | quit |
@@ -67,7 +71,7 @@ Indexing extracts and caches the text of every PDF it finds. A directory of 39 d
 
 ## Files
 
-- `~/.folio/config`: `mode`, `split`, `editor`, `build_tex`, `build_md`, `library`. All optional.
+- `~/.folio/config`: `mode`, `split`, `border`, `border_fg`, `editor`, `build_tex`, `build_md`, `library`. All optional.
 - `~/.folio/state`: where you were in each document, one tab-separated line each.
 - `~/.folio/index`: the list of indexed documents.
 - `~/.folio/cache/`: extracted text and rendered pages. Keyed by file and modification time, so a rebuilt PDF never shows a stale page. Safe to delete.
@@ -77,6 +81,7 @@ Example config:
 ```
 mode = split
 split = 55
+border = 2
 editor = scribe
 library = /home/geir/Main
 ```
