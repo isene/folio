@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#0a0a14"/>
+    </linearGradient>
+    <linearGradient id="rust" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f74c00"/>
+      <stop offset="100%" style="stop-color:#b7410e"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="128" cy="128" r="120" fill="url(#bg)" stroke="url(#rust)" stroke-width="3"/>
+
+  <!-- the two panes of a spread: text on the left, the page itself on the right -->
+  <rect x="30" y="62" width="90" height="132" rx="5"
+        fill="#0a0a14" stroke="#3d5a76" stroke-width="3"/>
+  <rect x="136" y="62" width="90" height="132" rx="5"
+        fill="#0f1420" stroke="#7aa2c0" stroke-width="3"/>
+
+  <!-- left: the words, reflowed and readable -->
+  <rect x="42" y="78"  width="48" height="7" rx="3" fill="url(#rust)"/>
+  <rect x="42" y="94"  width="66" height="6" rx="3" fill="#3d5a76"/>
+  <rect x="42" y="108" width="60" height="6" rx="3" fill="#3d5a76"/>
+  <rect x="42" y="122" width="66" height="6" rx="3" fill="#3d5a76"/>
+  <rect x="42" y="136" width="52" height="6" rx="3" fill="#3d5a76"/>
+  <rect x="42" y="150" width="64" height="6" rx="3" fill="#3d5a76"/>
+  <rect x="42" y="164" width="38" height="6" rx="3" fill="#3d5a76"/>
+
+  <!-- right: the page as it was set, margins and a figure -->
+  <rect x="148" y="76"  width="42" height="6" rx="2" fill="#7aa2c0"/>
+  <rect x="148" y="90"  width="66" height="4" rx="2" fill="#4a5a70"/>
+  <rect x="148" y="100" width="66" height="4" rx="2" fill="#4a5a70"/>
+  <rect x="148" y="110" width="54" height="4" rx="2" fill="#4a5a70"/>
+  <rect x="148" y="126" width="66" height="30" rx="3"
+        fill="#0a0a14" stroke="url(#rust)" stroke-width="2"/>
+  <rect x="148" y="166" width="66" height="4" rx="2" fill="#4a5a70"/>
+  <rect x="148" y="176" width="44" height="4" rx="2" fill="#4a5a70"/>
+
+  <!-- the spine, where the two readings meet -->
+  <rect x="124" y="58" width="8" height="140" rx="4" fill="url(#rust)"/>
+</svg>
