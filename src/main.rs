@@ -100,6 +100,27 @@ impl Config {
     }
 }
 
+/// Write one setting back, leaving every other line of the config, and any
+/// comment in it, exactly as the user wrote it.
+fn save_split(split: u16) {
+    let file = pdf::folio_dir().join("config");
+    let old = std::fs::read_to_string(&file).unwrap_or_default();
+    let mut out = String::new();
+    let mut seen = false;
+    for line in old.lines() {
+        if line.trim_start().starts_with("split") && line.contains('=') {
+            out.push_str(&format!("split = {}\n", split));
+            seen = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !seen { out.push_str(&format!("split = {}\n", split)); }
+    let _ = std::fs::create_dir_all(pdf::folio_dir());
+    let _ = std::fs::write(file, out);
+}
+
 /// Where you were, per document. One tab-separated line each, in
 /// `~/.folio/state`, so it is readable and repairable with an editor.
 fn state_file() -> PathBuf { pdf::folio_dir().join("state") }
@@ -157,6 +178,11 @@ struct App {
     needle: String,
     hits: Vec<usize>,
     hit: usize,
+    /// Digits typed so far, waiting for the key that uses them: `10g`.
+    count: String,
+    /// A `g` has been pressed and is waiting to see whether a second
+    /// one follows, which is vim's `gg`.
+    g_pending: bool,
 }
 
 impl App {
@@ -176,6 +202,7 @@ impl App {
             cols, rows,
             img: None, shown: None, status: None,
             needle: String::new(), hits: Vec::new(), hit: 0,
+            count: String::new(), g_pending: false,
         };
         app.layout();
         app
@@ -234,8 +261,11 @@ impl App {
             .unwrap_or_default();
         let hits = if self.hits.is_empty() { String::new() }
                    else { format!("  /{}  {}/{}", self.needle, self.hit + 1, self.hits.len()) };
-        self.header.set_text(&format!(" FOLIO  {}  page {}/{}  [{}]{}{}",
-            name, self.page + 1, self.pages, self.mode.name(), src, hits));
+        // A count being typed has to be visible, or `10g` is typed blind.
+        let count = if self.count.is_empty() { String::new() }
+                    else { format!("  {}", self.count) };
+        self.header.set_text(&format!(" FOLIO  {}  page {}/{}  [{}]{}{}{}",
+            name, self.page + 1, self.pages, self.mode.name(), src, hits, count));
         self.header.refresh();
 
         if self.mode != Mode::Page {
@@ -296,11 +326,46 @@ impl App {
         match self.status.take() {
             Some((msg, c)) => self.footer.say(&style::fg(&format!(" {}", msg), c)),
             None => self.footer.say(
-                " q:Quit  1/2/3:Mode  j/k:Scroll  Space/b:Page  /:Find  e:Edit  y:Yank  w:Write  s:Corpus  ?:Help"),
+                " q:Quit  m:Mode  j/k:Scroll  Space/b:Page  10g:Goto  /:Find  e:Edit  y:Yank  w/W:Divider  s:Corpus  ?:Help"),
         }
     }
 
     fn set_status(&mut self, msg: &str, c: u8) { self.status = Some((msg.to_string(), c)); }
+
+    /// Move the split divider, `w` wider and `W` narrower, the same keys
+    /// pointer uses. Remembered, so the width you settle on is the width
+    /// the next document opens at.
+    fn divider(&mut self, wider: bool) {
+        if self.mode != Mode::Split {
+            self.set_status("the divider only exists in split mode (m)", DIM_FG);
+            return;
+        }
+        let next = if wider { self.cfg.split + 5 } else { self.cfg.split.saturating_sub(5) };
+        self.cfg.split = next.clamp(20, 80);
+        save_split(self.cfg.split);
+        self.clear_image();
+        self.layout();
+        Crust::clear_screen();
+    }
+
+    /// The page a count names, or the first page when there is none. `10g`
+    /// goes to page ten; a bare `gg` goes to the front.
+    fn goto_counted(&mut self, default_last: bool) {
+        let n: Option<usize> = self.count.parse().ok();
+        self.count.clear();
+        self.g_pending = false;
+        match n {
+            Some(n) if n >= 1 => {
+                let p = (n - 1).min(self.pages - 1);
+                self.goto(p);
+                if n > self.pages { self.set_status(&format!("only {} pages", self.pages), DIM_FG); }
+            }
+            _ => {
+                let p = if default_last { self.pages.saturating_sub(1) } else { 0 };
+                self.goto(p);
+            }
+        }
+    }
 
     fn goto(&mut self, page: usize) {
         let p = page.min(self.pages.saturating_sub(1));
@@ -478,17 +543,17 @@ impl App {
 
     fn help(&mut self) {
         let text = format!("\n{}\n\n\
-  1 2 3        text / page / split\n\
-  m            cycle the modes\n\
+  m M          cycle the modes: text, page, split\n\
   j k ↑ ↓      scroll, turning the page at either end\n\
   Space b      next / previous page\n\
-  g G          first / last page\n\
+  gg G         first / last page\n\
+  10g          go to page 10\n\
   / n N        find in this document, next, previous\n\
   s            find across every indexed document\n\
   e            edit: the source if there is one, else a text sidecar\n\
   y            yank this page's text with a citation\n\
-  w            write the whole text beside the PDF\n\
-  + -          widen / narrow the text pane in split mode\n\
+  w W          widen / narrow the text pane in split mode\n\
+  Ctrl-W       write the whole text beside the PDF\n\
   q            quit\n\n\
 {}\n\
   Config is ~/.folio/config: mode, split, editor, build_tex, build_md, library.\n\
@@ -600,15 +665,23 @@ fn main() {
     loop {
         app.render();
         let Some(key) = Input::getchr(None) else { continue };
-        match key.as_str() {
+        // Digits are a count waiting for `g` or `G`, as in vim. Anything
+        // else throws the half-typed count away, so a stray `1` cannot
+        // change where the next keypress lands.
+        let k = key.as_str();
+        if k.len() == 1 && k.chars().next().unwrap().is_ascii_digit() {
+            if app.count.len() < 5 { app.count.push_str(k); }
+            continue;
+        }
+        if k != "g" { app.g_pending = false; }
+        if !matches!(k, "g" | "G") { app.count.clear(); }
+
+        match k {
             "q" | "Q" | "ESC" => break,
             "RESIZE" => { app.clear_image(); app.layout(); Crust::clear_screen(); }
-            "1" => { app.clear_image(); app.mode = Mode::Text; app.layout(); Crust::clear_screen(); }
-            "2" => { app.clear_image(); app.mode = Mode::Page; app.layout(); Crust::clear_screen(); }
-            "3" => { app.clear_image(); app.mode = Mode::Split; app.layout(); Crust::clear_screen(); }
-            "m" => {
+            "m" | "M" => {
                 app.clear_image();
-                app.mode = app.mode.next();
+                app.mode = if k == "m" { app.mode.next() } else { app.mode.next().next() };
                 app.layout();
                 Crust::clear_screen();
             }
@@ -618,31 +691,22 @@ fn main() {
             "PgUP" => app.scroll_by(-(app.left.h as i32)),
             " " | "SPACE" | "l" | "RIGHT" => { let p = app.page + 1; app.goto(p); }
             "b" | "BACK" | "h" | "LEFT" => { let p = app.page.saturating_sub(1); app.goto(p); }
-            "g" => app.goto(0),
-            "G" => { let p = app.pages.saturating_sub(1); app.goto(p); }
+            // `10g` goes to page ten, `gg` to the front, `G` to the end.
+            "g" => {
+                if !app.count.is_empty() { app.goto_counted(false); }
+                else if app.g_pending { app.goto_counted(false); }
+                else { app.g_pending = true; }
+            }
+            "G" => app.goto_counted(true),
             "/" => app.find(),
             "n" => app.next_hit(false),
             "N" => app.next_hit(true),
             "s" => app.corpus(),
             "e" => app.edit(),
             "y" => app.yank(),
-            "w" => app.write_text(),
-            "+" | "=" => {
-                if app.mode == Mode::Split && app.cfg.split < 80 {
-                    app.cfg.split += 5;
-                    app.clear_image();
-                    app.layout();
-                    Crust::clear_screen();
-                }
-            }
-            "-" => {
-                if app.mode == Mode::Split && app.cfg.split > 20 {
-                    app.cfg.split -= 5;
-                    app.clear_image();
-                    app.layout();
-                    Crust::clear_screen();
-                }
-            }
+            "w" => app.divider(true),
+            "W" => app.divider(false),
+            "C-W" => app.write_text(),
             "?" => app.help(),
             _ => {}
         }
@@ -688,6 +752,54 @@ mod tests {
         assert_eq!(saved_page(b), 3, "and leaves the other document alone");
         let raw = std::fs::read_to_string(&file).unwrap();
         assert_eq!(raw.lines().count(), 2, "one line per document, not one per save");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_count_names_a_page() {
+        // The whole of `10g`: digits gather, `g` spends them, and a page
+        // past the end lands on the last one rather than panicking.
+        let cases = [("10", 9usize), ("1", 0), ("18", 17), ("999", 17), ("", 0)];
+        let pages = 18usize;
+        for (typed, want) in cases {
+            let n: Option<usize> = typed.parse().ok();
+            let got = match n {
+                Some(n) if n >= 1 => (n - 1).min(pages - 1),
+                _ => 0,
+            };
+            assert_eq!(got, want, "typing {:?}g", typed);
+        }
+    }
+
+    #[test]
+    fn the_split_is_written_back_without_eating_the_config() {
+        let tmp = std::env::temp_dir().join("folio-config-test");
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(tmp.join(".folio")).unwrap();
+        let file = tmp.join(".folio/config");
+        std::fs::write(&file,
+            "# my reader\nmode = split\nsplit = 50\neditor = scribe\n").unwrap();
+        // save_split rewrites one line; do the same transform here so the
+        // test does not have to move HOME out from under the other tests.
+        let old = std::fs::read_to_string(&file).unwrap();
+        let mut out = String::new();
+        let mut seen = false;
+        for line in old.lines() {
+            if line.trim_start().starts_with("split") && line.contains('=') {
+                out.push_str("split = 65\n");
+                seen = true;
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        assert!(seen);
+        std::fs::write(&file, &out).unwrap();
+        let back = std::fs::read_to_string(&file).unwrap();
+        assert!(back.contains("# my reader"), "the comment survives");
+        assert!(back.contains("mode = split"), "other settings survive");
+        assert!(back.contains("split = 65"), "the new width is in");
+        assert!(!back.contains("split = 50"), "and the old one is gone");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

@@ -10,7 +10,7 @@ A PDF is two documents in one: the words, and the page they were set on. Most re
 
 ## Features
 
-- **Three modes**: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
+- **Three modes**, cycled with `m`: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
 - **Edit the real document**: `e` opens the `.md` or `.tex` sitting beside the PDF, rebuilds it on save, and reloads the page. A small change is a real edit, not a patch painted over the page.
 - **Corpus search**: `s` searches every indexed PDF, not just the open one, and opens the document on the page that carries the phrase.
 - **Quote with a citation**: `y` copies the page's text with the file name and page number attached.
@@ -33,17 +33,17 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 
 | Key | Action |
 |-----|--------|
-| `1` `2` `3` | text / page / split |
-| `m` | cycle the modes |
+| `m` `M` | cycle the modes: text, page, split |
 | `j` `k` `↑` `↓` | scroll, turning the page at either end |
 | `Space` `b` | next / previous page |
-| `g` `G` | first / last page |
+| `gg` `G` | first / last page |
+| `10g` | go to page 10 |
 | `/` `n` `N` | find in this document, next match, previous |
 | `s` | find across every indexed document |
 | `e` | edit the source if there is one, else a text sidecar |
 | `y` | yank this page's text with a citation |
-| `w` | write the whole text beside the PDF |
-| `+` `-` | widen / narrow the text pane in split mode |
+| `w` `W` | widen / narrow the text pane in split mode, as in pointer |
+| `Ctrl-W` | write the whole text beside the PDF |
 | `?` | help |
 | `q` | quit |
 
