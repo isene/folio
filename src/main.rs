@@ -402,6 +402,15 @@ impl App {
     }
 
     fn scroll_by(&mut self, delta: i32) {
+        // Page mode shows no text, so there is nothing to scroll: the arrows
+        // turn the page. Before this they scrolled the hidden text layer,
+        // wrapped to the one-column stub of a text pane, so a slide took
+        // hundreds of presses to walk off the end and turn.
+        if self.mode == Mode::Page {
+            let p = if delta > 0 { self.page + 1 } else { self.page.saturating_sub(1) };
+            self.goto(p);
+            return;
+        }
         let w = self.left.w.saturating_sub(1).max(8) as usize;
         let lines = wrap(self.page_text(), w).len();
         let h = self.left.h as usize;
