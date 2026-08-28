@@ -154,7 +154,10 @@ pub fn prefetch_bg(path: &Path, page: usize, pages: usize, height_px: u32) {
 pub fn source_for(path: &Path) -> Option<PathBuf> {
     let stem = path.file_stem()?.to_string_lossy().to_string();
     let dir = path.parent()?;
-    for ext in ["tex", "md", "markdown", "html"] {
+    // .hl first: a HyperList is the source Geir writes, and folio inventing
+    // a .txt beside one left the edit in a third file while the source and
+    // the PDF both went stale.
+    for ext in ["hl", "tex", "md", "markdown", "html"] {
         let cand = dir.join(format!("{}.{}", stem, ext));
         if cand.exists() { return Some(cand); }
     }
@@ -279,5 +282,45 @@ mod tests {
         // But it still renders, which is why Page mode is not optional.
         assert!(render_page(lone, 0, 400).is_some());
         println!("scan: {} pages, {} chars of text", pages.len(), chars);
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    /// A PDF rendered from a HyperList has to find that HyperList. Missing
+    /// `.hl` from the list is what made folio invent a `.txt` beside one,
+    /// leaving the edit in a third file while the source went stale.
+    #[test]
+    fn a_hyperlist_is_a_source() {
+        let tmp = std::env::temp_dir().join("folio-source-test");
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pdf = tmp.join("notes.pdf");
+        std::fs::write(&pdf, b"%PDF").unwrap();
+
+        assert!(source_for(&pdf).is_none(), "nothing beside it yet");
+
+        std::fs::write(tmp.join("notes.hl"), b"Root\n\tChild\n").unwrap();
+        assert_eq!(source_for(&pdf).unwrap(), tmp.join("notes.hl"));
+
+        // With several candidates the HyperList still wins, because it is
+        // the one the author writes.
+        std::fs::write(tmp.join("notes.md"), b"# Notes\n").unwrap();
+        std::fs::write(tmp.join("notes.tex"), b"\\documentclass{article}").unwrap();
+        assert_eq!(source_for(&pdf).unwrap(), tmp.join("notes.hl"));
+
+        // Without one, the older kinds still resolve in their own order.
+        std::fs::remove_file(tmp.join("notes.hl")).unwrap();
+        assert_eq!(source_for(&pdf).unwrap(), tmp.join("notes.tex"));
+
+        // A file of another name is not this document's source.
+        std::fs::remove_file(tmp.join("notes.tex")).unwrap();
+        std::fs::remove_file(tmp.join("notes.md")).unwrap();
+        std::fs::write(tmp.join("other.hl"), b"x").unwrap();
+        assert!(source_for(&pdf).is_none());
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

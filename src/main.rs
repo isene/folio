@@ -67,6 +67,10 @@ struct Config {
     editor: String,
     build_tex: String,
     build_md: String,
+    /// Empty by default: a HyperList has no one way to become a PDF, so
+    /// folio edits the source and leaves the rendering to you until you
+    /// name a command here.
+    build_hl: String,
     /// Where `--index` looks when given no directory.
     library: String,
 }
@@ -83,6 +87,7 @@ impl Config {
             // Twice, because one pass leaves every cross-reference unresolved.
             build_tex: "pdflatex -interaction=nonstopmode {src}".into(),
             build_md: "pandoc {src} -o {out}".into(),
+            build_hl: String::new(),
             library: format!("{}/Main", home),
         };
         let path = pdf::folio_dir().join("config");
@@ -100,6 +105,7 @@ impl Config {
                 "editor" => c.editor = v,
                 "build_tex" => c.build_tex = v,
                 "build_md" => c.build_md = v,
+                "build_hl" => c.build_hl = v,
                 "library" => c.library = v,
                 _ => {}
             }
@@ -526,7 +532,7 @@ impl App {
             None => {
                 let side = self.path.with_extension("txt");
                 if !side.exists() {
-                    let _ = std::fs::write(&side, self.text.join("\n\u{c}\n"));
+                    let _ = std::fs::write(&side, self.sidecar_text());
                 }
                 self.run_editor(&side);
                 self.set_status(&format!("edited {}", side.display()), 46);
@@ -545,8 +551,17 @@ impl App {
         let ext = src.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
         let cmd = match ext.as_str() {
             "tex" => self.cfg.build_tex.clone(),
+            "hl" => self.cfg.build_hl.clone(),
             _ => self.cfg.build_md.clone(),
         };
+        // No command for this kind of source: the edit is saved and the PDF
+        // is left alone, which is honest rather than half a rebuild.
+        if cmd.trim().is_empty() {
+            self.set_status(
+                &format!("saved {} (no build_{} set, PDF unchanged)", src.display(), ext),
+                220);
+            return;
+        }
         self.set_status("rebuilding…", 226);
         self.render();
         match pdf::rebuild(&src, &self.path, &cmd) {
@@ -622,10 +637,16 @@ impl App {
             self.set_status("kept the file that was there", DIM_FG);
             return;
         }
-        match std::fs::write(&side, self.text.join("\n\u{c}\n")) {
+        match std::fs::write(&side, self.sidecar_text()) {
             Ok(()) => self.set_status(&format!("wrote {}", side.display()), 46),
             Err(e) => self.set_status(&format!("write failed: {}", e), 196),
         }
+    }
+
+    /// The document's text as a file: pages separated by the form feed
+    /// pdftotext uses, and a trailing newline, because a text file has one.
+    fn sidecar_text(&self) -> String {
+        format!("{}\n", self.text.join("\n\u{c}\n"))
     }
 
     /// One key, and only `y` means yes. Every other key, Esc included,

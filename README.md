@@ -68,7 +68,7 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 
 A PDF cannot be edited as text. It places each glyph at a fixed coordinate, and the font it carries usually holds only the characters the document already uses. So a replacement of a different length mis-spaces the line, and a character the font lacks cannot be typed at all.
 
-What works is editing the source. If `paper.md` or `book.tex` sits beside `paper.pdf`, `e` opens that, and saving rebuilds the PDF and reloads the page. In split mode you edit on the left and see the result on the right. The build commands are configurable, and default to `pandoc` for Markdown and `pdflatex` for LaTeX.
+What works is editing the source. If `notes.hl`, `paper.md` or `book.tex` sits beside the PDF, `e` opens that, and saving rebuilds the PDF and reloads the page. A HyperList is looked for first, since that is often the file the document was written in. In split mode you edit on the left and see the result on the right. The build commands are configurable, and default to `pandoc` for Markdown and `pdflatex` for LaTeX. `build_hl` is empty by default, since a HyperList has no one way to become a PDF: with nothing set, `e` saves your edit and leaves the PDF alone rather than half-rebuilding it.
 
 With no source beside it, `e` gives you the extracted text in a `.txt` sidecar. That is a note about the document, not the document.
 
@@ -83,7 +83,7 @@ Indexing extracts and caches the text of every PDF it finds. A directory of 39 d
 
 ## Files
 
-- `~/.folio/config`: `mode`, `split`, `border`, `border_fg`, `editor`, `build_tex`, `build_md`, `library`. All optional.
+- `~/.folio/config`: `mode`, `split`, `border`, `border_fg`, `editor`, `build_tex`, `build_md`, `build_hl`, `library`. All optional.
 - `~/.folio/state`: where you were in each document, one tab-separated line each.
 - `~/.folio/index`: the list of indexed documents.
 - `~/.folio/cache/`: extracted text and rendered pages. Keyed by file and modification time, so a rebuilt PDF never shows a stale page. Safe to delete.
