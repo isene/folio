@@ -171,15 +171,23 @@ pub fn rebuild(source: &Path, pdf: &Path, cmd: &str) -> Result<(), String> {
     let src = source.to_string_lossy().to_string();
     let out = pdf.to_string_lossy().to_string();
     let line = cmd.replace("{src}", &src).replace("{out}", &out);
-    let mut parts = line.split_whitespace();
-    let prog = parts.next().ok_or("empty build command")?;
-    let args: Vec<String> = parts.map(|s| s.to_string()).collect();
     let dir = source.parent().unwrap_or(Path::new("."));
-    let o = Command::new(prog)
-        .args(&args)
-        .current_dir(dir)
-        .output()
-        .map_err(|e| format!("{}: {}", prog, e))?;
+    // A real build is often a pipeline: render to HTML, patch it, print it.
+    // Hand anything with shell punctuation to the shell, and spawn the rest
+    // directly so the common case costs no extra process.
+    let needs_shell = line.contains("&&") || line.contains("||")
+        || line.contains('|') || line.contains(';')
+        || line.contains('>') || line.contains('<');
+    let o = if needs_shell {
+        Command::new("sh").arg("-c").arg(&line).current_dir(dir).output()
+            .map_err(|e| format!("sh: {}", e))?
+    } else {
+        let mut parts = line.split_whitespace();
+        let prog = parts.next().ok_or("empty build command")?;
+        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+        Command::new(prog).args(&args).current_dir(dir).output()
+            .map_err(|e| format!("{}: {}", prog, e))?
+    };
     if o.status.success() { return Ok(()); }
     // LaTeX puts its errors on stdout, most other tools on stderr.
     let err = String::from_utf8_lossy(&o.stderr);
