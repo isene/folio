@@ -616,10 +616,23 @@ impl App {
 
     fn write_text(&mut self) {
         let side = self.path.with_extension("txt");
+        // Anything already there might be a note the user wrote, under a
+        // name that happens to match the PDF. Ask before flattening it.
+        if side.exists() && !self.confirm(&format!("overwrite {}?", side.display())) {
+            self.set_status("kept the file that was there", DIM_FG);
+            return;
+        }
         match std::fs::write(&side, self.text.join("\n\u{c}\n")) {
             Ok(()) => self.set_status(&format!("wrote {}", side.display()), 46),
             Err(e) => self.set_status(&format!("write failed: {}", e), 196),
         }
+    }
+
+    /// One key, and only `y` means yes. Every other key, Esc included,
+    /// leaves things as they are.
+    fn confirm(&mut self, question: &str) -> bool {
+        self.footer.say(&style::fg(&format!(" {}  y/N ", question), 220));
+        matches!(Input::getchr(None).as_deref(), Some("y") | Some("Y"))
     }
 
     /// Search every indexed PDF, not just this one. Opens the document the
@@ -672,7 +685,7 @@ impl App {
   y Y          yank this page with a citation / the document's path\n\
   w W          widen / narrow the text pane in split mode\n\
   Ctrl-B       borders: none, page, both, text\n\
-  Ctrl-W       write the whole text beside the PDF\n\
+  Ctrl-W       write the whole text beside the PDF (asks before overwriting)\n\
   q            quit\n\n\
 {}\n\
   Config is ~/.folio/config: mode, split, editor, build_tex, build_md, library.\n\
