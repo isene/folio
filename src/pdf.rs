@@ -66,6 +66,14 @@ pub fn text_pages(path: &Path) -> Vec<String> {
     split_pages(&out)
 }
 
+/// The whole document's text as one string, from the cache only. The corpus
+/// search wants to ask "is the phrase in here at all" over thousands of
+/// documents; splitting every one of them into pages first allocated a Vec
+/// of Strings per document to answer a question about the raw bytes.
+pub fn cached_text(path: &Path) -> Option<String> {
+    std::fs::read_to_string(cache_dir().join(format!("{}.txt", key(path)))).ok()
+}
+
 fn split_pages(s: &str) -> Vec<String> {
     let mut v: Vec<String> = s.split('\u{c}').map(|p| p.trim_end().to_string()).collect();
     // A trailing form feed leaves an empty last entry that is not a page.

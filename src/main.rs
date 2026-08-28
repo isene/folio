@@ -824,6 +824,26 @@ fn build_index(root: &Path) -> usize {
     n
 }
 
+/// Case-insensitive substring test that allocates nothing.
+///
+/// `to_lowercase()` builds a fresh copy of the haystack, and the corpus
+/// search runs over hundreds of megabytes of cached text. Folding case per
+/// byte as we compare costs no memory at all. ASCII folding only, which is
+/// all case means: a Japanese or Greek needle matches either way.
+fn contains_ci(hay: &str, needle_lc: &str) -> bool {
+    let (h, n) = (hay.as_bytes(), needle_lc.as_bytes());
+    if n.is_empty() { return true; }
+    if n.len() > h.len() { return false; }
+    let first = n[0];
+    for i in 0..=(h.len() - n.len()) {
+        if h[i].to_ascii_lowercase() != first { continue; }
+        if h[i..].iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Which indexed documents carry `needle`, and on which page first.
 fn index_search(needle: &str) -> Vec<(PathBuf, usize)> {
     let lc = needle.to_lowercase();
@@ -832,9 +852,13 @@ fn index_search(needle: &str) -> Vec<(PathBuf, usize)> {
     for line in list.lines() {
         if line.trim().is_empty() { continue; }
         let p = PathBuf::from(line);
+        // Ask the cheap question first: is the phrase anywhere in this
+        // document? Only then pay to split it into pages to find where.
+        let Some(text) = pdf::cached_text(&p) else { continue };
+        if !contains_ci(&text, &lc) { continue; }
         if !p.exists() { continue; }
         for (i, page) in pdf::text_pages(&p).iter().enumerate() {
-            if page.to_lowercase().contains(&lc) { out.push((p, i)); break; }
+            if contains_ci(page, &lc) { out.push((p, i)); break; }
         }
         if out.len() >= 200 { break; }
     }
@@ -1119,6 +1143,20 @@ mod tests {
     }
 
     #[test]
+    fn case_folding_matches_without_allocating() {
+        assert!(contains_ci("Hello World", "world"));
+        assert!(contains_ci("HELLO", "hello"));
+        assert!(!contains_ci("hello", "goodbye"));
+        assert!(contains_ci("anything", ""));
+        assert!(!contains_ci("ab", "abc"), "a needle longer than the text");
+        // Non-ASCII passes through unfolded, which is what case means there.
+        assert!(contains_ci("Fw: 脆弱性対応", "脆弱性"));
+        assert!(contains_ci("straße", "straße"));
+        // The near-miss that a first-byte skip has to get right.
+        assert!(contains_ci("aab", "ab"));
+    }
+
+    #[test]
     fn the_corpus_finds_a_paper_by_its_words() {
         if !pdf::folio_dir().join("index").exists() {
             eprintln!("skipped: no corpus index built");
@@ -1128,7 +1166,11 @@ mod tests {
             eprintln!("skipped: set FOLIO_TEST_PHRASE to something in your index");
             return;
         };
+        let t = std::time::Instant::now();
         let hits = index_search(&phrase);
+        println!("searched {} documents in {} ms",
+                 std::fs::read_to_string(index_path()).map(|s| s.lines().count()).unwrap_or(0),
+                 t.elapsed().as_millis());
         assert!(!hits.is_empty(), "{:?} is in the indexed documents", phrase);
         let (path, page) = &hits[0];
         assert!(path.extension().unwrap() == "pdf");
