@@ -325,14 +325,16 @@ impl App {
             self.status = Some((
                 if factor > 1.0 { "Already full width".into() } else { "Already fits".into() },
                 DIM_FG));
-            self.render();
             return;
         }
         self.zoom = next;
         self.img_scroll = self.img_scroll.min(
             self.zoomed_rows().saturating_sub(self.right.h));
-        self.redraw_image();
-        self.render();
+        // See the `z` key: a new size needs the screen cleared under it.
+        // The loop renders straight after this returns.
+        self.clear_image();
+        self.layout();
+        Crust::clear_screen();
     }
 
     fn image_box(&self) -> Option<(u16, u16, u16, u16)> {
@@ -363,13 +365,6 @@ impl App {
         }
     }
 
-    fn redraw_image(&mut self) {
-        if let Some(ref mut d) = self.img {
-            d.clear(1, 2, self.cols, self.rows.saturating_sub(2), self.cols, self.rows);
-            for old in std::mem::take(&mut self.live) { d.forget_path(&old); }
-        }
-        self.shown = None;
-    }
 
     fn clear_image(&mut self) {
         if let Some(ref mut d) = self.img {
@@ -603,8 +598,9 @@ impl App {
                 // A last half-step lands on the foot of the page rather than
                 // sailing past it, so the bottom is never skipped.
                 if next != cur {
+                    // No render here: the loop draws once per key, and an
+                    // inline one placed every band twice.
                     self.img_scroll = next as u16;
-                    self.render();
                     return;
                 }
                 // Already at the top or the foot: turn, and land on the edge
@@ -614,7 +610,6 @@ impl App {
                 if p != self.page {
                     self.goto(p);
                     self.img_scroll = landing.min(self.zoomed_rows().saturating_sub(h));
-                    self.render();
                 }
                 return;
             }
@@ -1130,12 +1125,18 @@ fn main() {
             }
             // Full width and back. The page is then taller than the pane,
             // so Up/Down walk down it.
+            // Same recipe as a mode change, and for the same reason: this
+            // is the one thing that redraws the page at a NEW size, and
+            // glass kept showing the old geometry until something forced
+            // a full repaint. Switching workspace and back fixed it,
+            // which is what gave the cause away.
             "z" => {
                 let full = app.full_width_zoom();
                 app.zoom = if app.zoom > 1.01 { 1.0 } else { full };
                 app.img_scroll = 0;
-                app.redraw_image();
-                app.render();
+                app.clear_image();
+                app.layout();
+                Crust::clear_screen();
             }
             "+" | "=" => app.zoom_by(1.25),
             "-" | "_" => app.zoom_by(0.8),
