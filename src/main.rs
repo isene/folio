@@ -331,7 +331,7 @@ impl App {
         self.zoom = next;
         self.img_scroll = self.img_scroll.min(
             self.zoomed_rows().saturating_sub(self.right.h));
-        self.clear_image();
+        self.redraw_image();
         self.render();
     }
 
@@ -340,6 +340,35 @@ impl App {
             Mode::Text => None,
             _ => Some((self.right.x, self.right.y, self.right.w, self.right.h)),
         }
+    }
+
+    /// Wipe the page off the screen but keep the display.
+    ///
+    /// Dropping the glow display loses its record of which images the
+    /// terminal is holding, and a fresh one starts numbering ids from
+    /// the beginning, so the next placement can land on an id the
+    /// terminal still has something else under. Changing the zoom is
+    /// the one thing that redraws the same page at a new size while
+    /// the reader watches, so it takes this path instead.
+    /// One line per placement into `~/.folio/debug`, when FOLIO_DEBUG is
+    /// set. An image that comes out the wrong shape is invisible from
+    /// the outside: the file on disk is right and the pixels on screen
+    /// are wrong, and only these numbers say which step lost them.
+    fn trace(&self, what: &str) {
+        if std::env::var_os("FOLIO_DEBUG").is_none() { return; }
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
+            .open(pdf::folio_dir().join("debug")) {
+            let _ = writeln!(f, "{}", what);
+        }
+    }
+
+    fn redraw_image(&mut self) {
+        if let Some(ref mut d) = self.img {
+            d.clear(1, 2, self.cols, self.rows.saturating_sub(2), self.cols, self.rows);
+            for old in std::mem::take(&mut self.live) { d.forget_path(&old); }
+        }
+        self.shown = None;
     }
 
     fn clear_image(&mut self) {
@@ -458,6 +487,13 @@ impl App {
                         // placement goes, so a live image is a VISIBLE one,
                         // and two placements on the same cells at the same
                         // depth let the old page cover the new one.
+                        let (cw, ch) = glow::get_cell_size();
+                        self.trace(&format!(
+                            "place box={}x{} cells at {},{}  cell={}x{}px  \
+                             img={:?}px  zoom={:.2} scroll={}  {}",
+                            w, h, x, y, cw, ch, pdf::png_dims(&file),
+                            self.zoom, self.img_scroll,
+                            file.file_name().unwrap_or_default().to_string_lossy()));
                         let mut placed = false;
                         if let Some(ref mut d) = self.img {
                             placed = d.show(&key, x, y, w, h);
@@ -1098,7 +1134,7 @@ fn main() {
                 let full = app.full_width_zoom();
                 app.zoom = if app.zoom > 1.01 { 1.0 } else { full };
                 app.img_scroll = 0;
-                app.clear_image();
+                app.redraw_image();
                 app.render();
             }
             "+" | "=" => app.zoom_by(1.25),
