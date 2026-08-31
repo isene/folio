@@ -405,7 +405,7 @@ impl App {
         }
 
         if let Some((x, y, w, h)) = self.image_box() {
-            let (cell_w, cell_h) = glow::get_cell_size();
+            let (_, cell_h) = glow::get_cell_size();
             // Zoom scales the render, not the placement: mutool draws the
             // page bigger and the terminal shows a window onto it. Scaling
             // a fitted render up would just enlarge its pixels.
@@ -416,8 +416,32 @@ impl App {
                     // The scroll offset is part of what is on screen, so a
                     // zoomed page that moved needs re-placing even though the
                     // file behind it has not changed.
+                    // Zoomed in, the page is taller than the pane, so only a
+                    // band of it is on screen. Cut that band into its own file
+                    // rather than asking the terminal to crop: glass places
+                    // whatever it is given scaled to the cells it was given,
+                    // which squashed the whole page into the pane.
+                    let ih = pdf::png_dims(&file)
+                        .map(|(_, ph)| (ph.div_ceil(cell_h.max(1) as u32)) as u16)
+                        .unwrap_or(h);
+                    let file = if ih > h {
+                        let px = cell_h.max(1) as u32;
+                        let band_h = h as u32 * px;
+                        let step = (h / 2).max(1);
+                        let max = ih - h;
+                        // The bands on either side, cut while the reader is
+                        // reading this one, so the next press finds its own
+                        // already done.
+                        let up = self.img_scroll.checked_sub(step).map(|r| r as u32 * px);
+                        let down = if self.img_scroll < max {
+                            Some(self.img_scroll.saturating_add(step).min(max) as u32 * px)
+                        } else { None };
+                        let band = pdf::page_band(&file, self.img_scroll as u32 * px, band_h);
+                        pdf::band_bg(&file, [down, up], band_h);
+                        band.unwrap_or(file)
+                    } else { file };
                     let key = file.to_string_lossy().to_string();
-                    let stamp = format!("{}@{}", key, self.img_scroll);
+                    let stamp = key.clone();
                     if self.shown.as_deref() != Some(stamp.as_str()) {
                         if self.img.is_none() {
                             let d = glow::Display::new();
@@ -434,23 +458,9 @@ impl App {
                         // placement goes, so a live image is a VISIBLE one,
                         // and two placements on the same cells at the same
                         // depth let the old page cover the new one.
-                        // At fit the whole page is on screen. Zoomed in it
-                        // is taller than the pane, so place a window onto it
-                        // and let Up/Down move the window. show_clipped keys
-                        // its cache on the full size, so scrolling re-places
-                        // the same image instead of re-sending it.
-                        let (iw, ih) = pdf::png_dims(&file)
-                            .map(|(pw, ph)| (
-                                (pw.div_ceil(cell_w.max(1) as u32)) as u16,
-                                (ph.div_ceil(cell_h.max(1) as u32)) as u16))
-                            .unwrap_or((w, h));
                         let mut placed = false;
                         if let Some(ref mut d) = self.img {
-                            placed = if ih > h {
-                                d.show_clipped(&key, x, y, iw, ih, self.img_scroll, h)
-                            } else {
-                                d.show(&key, x, y, w, h)
-                            };
+                            placed = d.show(&key, x, y, w, h);
                             if placed {
                                 for old in std::mem::take(&mut self.live) {
                                     if old != key { d.forget_path(&old); }
@@ -546,14 +556,23 @@ impl App {
             let (over, h) = (self.zoomed_rows(), self.right.h);
             if over > h {
                 let max = over - h;
-                let next = self.img_scroll as i32 + delta;
-                if next >= 0 && next <= max as i32 {
+                // Half a pane per press, with the other half carried over so
+                // no line is lost across the jump. Cutting a band costs a
+                // fifth of a second, almost all of it decoding the full
+                // zoomed page, so a row at a time would stutter. Reading a
+                // blown-up page is paging anyway, not gliding.
+                let step = (h / 2).max(1) as i32;
+                let cur = self.img_scroll as i32;
+                let next = (cur + delta.signum() * step).clamp(0, max as i32);
+                // A last half-step lands on the foot of the page rather than
+                // sailing past it, so the bottom is never skipped.
+                if next != cur {
                     self.img_scroll = next as u16;
                     self.render();
                     return;
                 }
-                // Off the top or bottom: turn, and land on the edge the
-                // reader is arriving from.
+                // Already at the top or the foot: turn, and land on the edge
+                // the reader is arriving from.
                 let landing = if delta > 0 { 0 } else { u16::MAX };
                 let p = if delta > 0 { self.page + 1 } else { self.page.saturating_sub(1) };
                 if p != self.page {
