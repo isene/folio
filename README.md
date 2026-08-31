@@ -10,6 +10,7 @@ A PDF is two documents in one: the words, and the page they were set on. Most re
 
 ## Features
 
+- **Read a page at full width**: `z` in page mode blows the page up until it is as wide as the terminal, and `↑` `↓` walk down it. `+` and `-` step the zoom. Small print in a scan becomes readable without leaving the terminal.
 - **Three modes** on `F1` `F2` `F3`, or cycled with `m`: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
 - **Edit the real document**: `e` opens the `.md` or `.tex` sitting beside the PDF, rebuilds it on save, and reloads the page. A small change is a real edit, not a patch painted over the page.
 - **Corpus search**: `s` searches every indexed PDF, not just the open one, and opens the document on the page that carries the phrase.
@@ -51,6 +52,8 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 | `m` `M` | cycle the modes forward / back |
 | `j` `k` `↑` `↓` | scroll, turning the page at either end |
 | `Space` `b` | next / previous page |
+| `z` | in page mode: full width, and back to the whole page |
+| `+` `-` | zoom in / out, between the whole page and full width |
 | `gg` `G` | first / last page |
 | `10g` | go to page 10 |
 | `/` `n` `N` | find in this document, next match, previous |

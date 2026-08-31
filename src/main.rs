@@ -199,6 +199,12 @@ struct App {
     page: usize,
     /// First visible line of the current page's text.
     scroll: usize,
+    /// How much bigger than fit-to-pane the page is drawn. 1.0 fits the
+    /// whole page; the ceiling is the zoom that makes it exactly as wide
+    /// as the pane, so a page never runs off the side.
+    zoom: f32,
+    /// First visible row of the zoomed page, in cells.
+    img_scroll: u16,
     mode: Mode,
     cfg: Config,
     header: Pane,
@@ -233,7 +239,7 @@ impl App {
         let page = saved_page(&path).min(pages.saturating_sub(1));
         let (cols, rows) = Crust::terminal_size();
         let mut app = App {
-            path, pages, text, page, scroll: 0,
+            path, pages, text, page, scroll: 0, zoom: 1.0, img_scroll: 0,
             mode: cfg.mode, cfg,
             header: Pane::new(1, 1, cols, 1, 255, 236),
             left: Pane::new(1, 2, cols, rows.saturating_sub(2), TEXT_BG_FG, 0),
@@ -292,6 +298,43 @@ impl App {
     }
 
     /// The image pane in cells, or None when this mode shows no image.
+    /// How many rows the page occupies at the current zoom.
+    fn zoomed_rows(&self) -> u16 {
+        ((self.right.h as f32) * self.zoom).round().max(1.0) as u16
+    }
+
+    /// The zoom at which the page is exactly as wide as the pane. Going
+    /// past it would push the page off the side, and folio has no
+    /// sideways scroll, so this is the ceiling.
+    fn full_width_zoom(&self) -> f32 {
+        let (cell_w, cell_h) = glow::get_cell_size();
+        let px = (self.right.h as u32) * (cell_h.max(1) as u32);
+        let fit_w = pdf::render_page(&self.path, self.page, px)
+            .and_then(|f| pdf::png_dims(&f))
+            .map(|(pw, _)| (pw.div_ceil(cell_w.max(1) as u32)) as f32)
+            .unwrap_or(self.right.w as f32);
+        if fit_w < 1.0 { return 1.0; }
+        ((self.right.w as f32) / fit_w).max(1.0)
+    }
+
+    /// Step the zoom, keeping it between fit and full width.
+    fn zoom_by(&mut self, factor: f32) {
+        let max = self.full_width_zoom();
+        let next = (self.zoom * factor).clamp(1.0, max);
+        if (next - self.zoom).abs() < 0.01 {
+            self.status = Some((
+                if factor > 1.0 { "Already full width".into() } else { "Already fits".into() },
+                DIM_FG));
+            self.render();
+            return;
+        }
+        self.zoom = next;
+        self.img_scroll = self.img_scroll.min(
+            self.zoomed_rows().saturating_sub(self.right.h));
+        self.clear_image();
+        self.render();
+    }
+
     fn image_box(&self) -> Option<(u16, u16, u16, u16)> {
         match self.mode {
             Mode::Text => None,
@@ -320,8 +363,18 @@ impl App {
         // A count being typed has to be visible, or `10g` is typed blind.
         let count = if self.count.is_empty() { String::new() }
                     else { format!("  {}", self.count) };
-        self.header.set_text(&format!(" FOLIO  {}  page {}/{}  [{}]{}{}{}",
-            name, self.page + 1, self.pages, self.mode.name(), src, hits, count));
+        // Zoom is only worth showing when it is not the plain fitted page,
+        // and how far down a tall page you are is the other half of it.
+        let zoom = if self.zoom <= 1.01 { String::new() } else {
+            let rows = self.zoomed_rows();
+            let pos = if rows > self.right.h {
+                format!("  {}%", 100 * (self.img_scroll as u32 + self.right.h as u32)
+                    / rows.max(1) as u32)
+            } else { String::new() };
+            format!("  {:.1}x{}", self.zoom, pos)
+        };
+        self.header.set_text(&format!(" FOLIO  {}  page {}/{}  [{}]{}{}{}{}",
+            name, self.page + 1, self.pages, self.mode.name(), src, zoom, hits, count));
         self.header.refresh();
 
         if self.mode != Mode::Page {
@@ -352,12 +405,20 @@ impl App {
         }
 
         if let Some((x, y, w, h)) = self.image_box() {
-            let (_, cell_h) = glow::get_cell_size();
-            let px = (h as u32) * (cell_h.max(1) as u32);
+            let (cell_w, cell_h) = glow::get_cell_size();
+            // Zoom scales the render, not the placement: mutool draws the
+            // page bigger and the terminal shows a window onto it. Scaling
+            // a fitted render up would just enlarge its pixels.
+            let px = ((h as f32) * self.zoom).round().max(1.0) as u32
+                * (cell_h.max(1) as u32);
             match pdf::render_page(&self.path, self.page, px) {
                 Some(file) => {
+                    // The scroll offset is part of what is on screen, so a
+                    // zoomed page that moved needs re-placing even though the
+                    // file behind it has not changed.
                     let key = file.to_string_lossy().to_string();
-                    if self.shown.as_deref() != Some(key.as_str()) {
+                    let stamp = format!("{}@{}", key, self.img_scroll);
+                    if self.shown.as_deref() != Some(stamp.as_str()) {
                         if self.img.is_none() {
                             let d = glow::Display::new();
                             if d.supported() { self.img = Some(d); }
@@ -373,9 +434,23 @@ impl App {
                         // placement goes, so a live image is a VISIBLE one,
                         // and two placements on the same cells at the same
                         // depth let the old page cover the new one.
+                        // At fit the whole page is on screen. Zoomed in it
+                        // is taller than the pane, so place a window onto it
+                        // and let Up/Down move the window. show_clipped keys
+                        // its cache on the full size, so scrolling re-places
+                        // the same image instead of re-sending it.
+                        let (iw, ih) = pdf::png_dims(&file)
+                            .map(|(pw, ph)| (
+                                (pw.div_ceil(cell_w.max(1) as u32)) as u16,
+                                (ph.div_ceil(cell_h.max(1) as u32)) as u16))
+                            .unwrap_or((w, h));
                         let mut placed = false;
                         if let Some(ref mut d) = self.img {
-                            placed = d.show(&key, x, y, w, h);
+                            placed = if ih > h {
+                                d.show_clipped(&key, x, y, iw, ih, self.img_scroll, h)
+                            } else {
+                                d.show(&key, x, y, w, h)
+                            };
                             if placed {
                                 for old in std::mem::take(&mut self.live) {
                                     if old != key { d.forget_path(&old); }
@@ -386,7 +461,7 @@ impl App {
                         // the page it was meant to show never gets another try.
                         if placed {
                             self.live = vec![key.clone()];
-                            self.shown = Some(key);
+                            self.shown = Some(stamp);
                         }
                     }
                     if self.right.border { self.right.border_refresh(); }
@@ -405,7 +480,7 @@ impl App {
         let left = match self.status.take() {
             Some((msg, c)) => style::fg(&format!(" {}", msg), c),
             None => style::fg(
-                " q:Quit  F1/F2/F3:Mode  j/k:Scroll  Space/b:Page  10g:Goto  /:Find  e:Edit  y/Y:Yank  w/W:Divider  s:Corpus  ?:Help",
+                " q:Quit  F1/F2/F3:Mode  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
                 DIM_FG),
         };
         let version = format!("folio v{} ", VERSION);
@@ -452,6 +527,7 @@ impl App {
     }
 
     fn goto(&mut self, page: usize) {
+        self.img_scroll = 0;
         let p = page.min(self.pages.saturating_sub(1));
         if p == self.page { return; }
         self.page = p;
@@ -465,6 +541,28 @@ impl App {
         // wrapped to the one-column stub of a text pane, so a slide took
         // hundreds of presses to walk off the end and turn.
         if self.mode == Mode::Page {
+            // Zoomed in, the page is taller than the pane, so the arrows
+            // walk down it and only turn at the edges.
+            let (over, h) = (self.zoomed_rows(), self.right.h);
+            if over > h {
+                let max = over - h;
+                let next = self.img_scroll as i32 + delta;
+                if next >= 0 && next <= max as i32 {
+                    self.img_scroll = next as u16;
+                    self.render();
+                    return;
+                }
+                // Off the top or bottom: turn, and land on the edge the
+                // reader is arriving from.
+                let landing = if delta > 0 { 0 } else { u16::MAX };
+                let p = if delta > 0 { self.page + 1 } else { self.page.saturating_sub(1) };
+                if p != self.page {
+                    self.goto(p);
+                    self.img_scroll = landing.min(self.zoomed_rows().saturating_sub(h));
+                    self.render();
+                }
+                return;
+            }
             let p = if delta > 0 { self.page + 1 } else { self.page.saturating_sub(1) };
             self.goto(p);
             return;
@@ -697,6 +795,8 @@ impl App {
   m M          cycle the modes forward / back\n\
   j k ↑ ↓      scroll, turning the page at either end\n\
   Space b      next / previous page\n\
+  z            page mode: full width, and back to the whole page\n\
+  + -          zoom in / out, between the whole page and full width\n\
   gg G         first / last page\n\
   10g          go to page 10\n\
   / n N        find in this document, next, previous\n\
@@ -968,13 +1068,30 @@ fn main() {
                     "m"  => app.mode.next(),
                     _    => app.mode.next().next(),
                 };
+                app.zoom = 1.0;
+                app.img_scroll = 0;
                 app.layout();
                 Crust::clear_screen();
             }
+            // Full width and back. The page is then taller than the pane,
+            // so Up/Down walk down it.
+            "z" => {
+                let full = app.full_width_zoom();
+                app.zoom = if app.zoom > 1.01 { 1.0 } else { full };
+                app.img_scroll = 0;
+                app.clear_image();
+                app.render();
+            }
+            "+" | "=" => app.zoom_by(1.25),
+            "-" | "_" => app.zoom_by(0.8),
             "j" | "DOWN" => app.scroll_by(1),
             "k" | "UP" => app.scroll_by(-1),
-            "PgDOWN" => app.scroll_by(app.left.h as i32),
-            "PgUP" => app.scroll_by(-(app.left.h as i32)),
+            // A page down is a screenful of whichever pane is showing the
+            // document. In Page mode the text pane is a two-column stub.
+            "PgDOWN" | "PgUP" => {
+                let h = if app.mode == Mode::Page { app.right.h } else { app.left.h } as i32;
+                app.scroll_by(if k == "PgDOWN" { h } else { -h });
+            }
             " " | "SPACE" | "l" | "RIGHT" => { let p = app.page + 1; app.goto(p); }
             "b" | "BACK" | "h" | "LEFT" => { let p = app.page.saturating_sub(1); app.goto(p); }
             // `10g` goes to page ten, `gg` to the front, `G` to the end.

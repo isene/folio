@@ -100,6 +100,19 @@ pub fn page_count(path: &Path) -> usize {
 }
 
 /// A page as a PNG, sized to `height_px`, cached. Returns the file to hand
+/// A PNG's pixel width and height, read from its header.
+///
+/// Eight bytes of signature, then the IHDR length and tag, then width
+/// and height as big-endian 32-bit. 24 bytes read, no decode.
+pub fn png_dims(path: &Path) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let mut head = [0u8; 24];
+    std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+    if &head[..8] != b"\x89PNG\r\n\x1a\n" { return None; }
+    let n = |i: usize| u32::from_be_bytes([head[i], head[i+1], head[i+2], head[i+3]]);
+    Some((n(16), n(20)))
+}
+
 /// to glow.
 ///
 /// `mutool -h` fits the height and keeps the aspect, which is what a pane
