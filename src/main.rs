@@ -852,6 +852,7 @@ impl App {
   / n N        find in this document, next, previous\n\
   s            find across every indexed document\n\
   o            open another document\n\
+  r            re-read this document after it changed on disk\n\
   e            edit: the source if there is one, else a text sidecar\n\
   y Y          yank this page with a citation / the document's path\n\
   w W          widen / narrow the text pane in split mode\n\
@@ -1162,6 +1163,10 @@ fn main() {
             "N" => app.next_hit(true),
             "s" => app.corpus(),
             "o" => app.open_another(),
+            "r" => {
+                app.reload();
+                app.set_status("re-read from disk", 46);
+            }
             "e" => app.edit(),
             "y" => app.yank(),
             "Y" => app.yank_name(),

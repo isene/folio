@@ -1,6 +1,6 @@
 [package]
 name = "folio"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2021"
 authors = ["Geir Isene <g@isene.com>"]
 description = "Terminal PDF reader: pages as text, as images, or both at once. Part of the Fe2O3 suite, built on crust."

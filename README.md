@@ -16,6 +16,7 @@ A PDF is two documents in one: the words, and the page they were set on. Most re
 - **Corpus search**: `s` searches every indexed PDF, not just the open one, and opens the document on the page that carries the phrase.
 - **Quote with a citation**: `y` copies the page's text with the file name and page number attached.
 - **Reads scans too**: a scanned PDF has no text layer, so folio says so and shows you the page.
+- **Re-read on demand**: `r` re-reads a document changed outside folio: new text, new pages, no stale cache.
 - **Remembers where you were**, per document, in plain text you can edit.
 - **Zero idle cost**: nothing runs while you read. Text is extracted once per document, a page image rendered once per size, and both are kept.
 
