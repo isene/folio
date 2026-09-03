@@ -99,31 +99,6 @@ pub fn page_count(path: &Path) -> usize {
     text_pages(path).len().max(1)
 }
 
-/// The horizontal band of a rendered page starting `top_px` down, as
-/// its own PNG.
-///
-/// The kitty protocol can crop at placement time, but a terminal is
-/// free to ignore that and scale the whole image into the cells it was
-/// given, which squashes the page. Cutting the band ourselves is one
-/// `magick` run and works the same everywhere.
-///
-/// Cached per offset, so scrolling back up costs nothing.
-pub fn page_band(page_png: &Path, top_px: u32, height_px: u32) -> Option<PathBuf> {
-    let stem = page_png.file_stem()?.to_string_lossy().to_string();
-    let out = cache_dir().join(format!("{}-b{}-{}.png", stem, top_px, height_px));
-    if out.exists() { return Some(out); }
-    let status = Command::new("magick")
-        .arg(page_png)
-        .arg("-crop").arg(format!("x{}+0+{}", height_px, top_px))
-        .arg("+repage")
-        .arg(&out)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()?;
-    if status.success() && out.exists() { Some(out) } else { None }
-}
-
 /// A PNG's pixel width and height, read from its header.
 ///
 /// Eight bytes of signature, then the IHDR length and tag, then width
@@ -180,24 +155,6 @@ pub fn prefetch_bg(path: &Path, page: usize, pages: usize, height_px: u32) {
             if p < pages && cached_page(&path, p, height_px).is_none() {
                 let _ = render_page(&path, p, height_px);
             }
-        }
-        BUSY.store(false, Ordering::SeqCst);
-    });
-}
-
-/// Cut the bands on either side of the one being read, off this thread.
-///
-/// A crop costs a fifth of a second, almost all of it decoding the full
-/// zoomed page. Paid while the reader is reading, the next press finds
-/// its band already cut.
-pub fn band_bg(page_png: &Path, tops: [Option<u32>; 2], height_px: u32) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static BUSY: AtomicBool = AtomicBool::new(false);
-    if BUSY.swap(true, Ordering::SeqCst) { return; }
-    let src = page_png.to_path_buf();
-    std::thread::spawn(move || {
-        for top in tops.into_iter().flatten() {
-            let _ = page_band(&src, top, height_px);
         }
         BUSY.store(false, Ordering::SeqCst);
     });

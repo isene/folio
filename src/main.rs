@@ -441,31 +441,15 @@ impl App {
                     // zoomed page that moved needs re-placing even though the
                     // file behind it has not changed.
                     // Zoomed in, the page is taller than the pane, so only a
-                    // band of it is on screen. Cut that band into its own file
-                    // rather than asking the terminal to crop: glass places
-                    // whatever it is given scaled to the cells it was given,
-                    // which squashed the whole page into the pane.
+                    // band of it is on screen. The terminal crops it: the
+                    // placement names a source rectangle, so the page is sent
+                    // once and a scroll step is one placement with a new
+                    // top. (glass honours the rectangle from v0.3.61.)
                     let ih = pdf::png_dims(&file)
                         .map(|(_, ph)| (ph.div_ceil(cell_h.max(1) as u32)) as u16)
                         .unwrap_or(h);
-                    let file = if ih > h {
-                        let px = cell_h.max(1) as u32;
-                        let band_h = h as u32 * px;
-                        let step = (h / 2).max(1);
-                        let max = ih - h;
-                        // The bands on either side, cut while the reader is
-                        // reading this one, so the next press finds its own
-                        // already done.
-                        let up = self.img_scroll.checked_sub(step).map(|r| r as u32 * px);
-                        let down = if self.img_scroll < max {
-                            Some(self.img_scroll.saturating_add(step).min(max) as u32 * px)
-                        } else { None };
-                        let band = pdf::page_band(&file, self.img_scroll as u32 * px, band_h);
-                        pdf::band_bg(&file, [down, up], band_h);
-                        band.unwrap_or(file)
-                    } else { file };
                     let key = file.to_string_lossy().to_string();
-                    let stamp = key.clone();
+                    let stamp = if ih > h { format!("{}@{}", key, self.img_scroll) } else { key.clone() };
                     if self.shown.as_deref() != Some(stamp.as_str()) {
                         if self.img.is_none() {
                             let d = glow::Display::new();
@@ -491,7 +475,11 @@ impl App {
                             file.file_name().unwrap_or_default().to_string_lossy()));
                         let mut placed = false;
                         if let Some(ref mut d) = self.img {
-                            placed = d.show(&key, x, y, w, h);
+                            placed = if ih > h {
+                                d.show_clipped(&key, x, y, w, ih, self.img_scroll, h)
+                            } else {
+                                d.show(&key, x, y, w, h)
+                            };
                             if placed {
                                 for old in std::mem::take(&mut self.live) {
                                     if old != key { d.forget_path(&old); }
@@ -587,19 +575,13 @@ impl App {
             let (over, h) = (self.zoomed_rows(), self.right.h);
             if over > h {
                 let max = over - h;
-                // Half a pane per press, with the other half carried over so
-                // no line is lost across the jump. Cutting a band costs a
-                // fifth of a second, almost all of it decoding the full
-                // zoomed page, so a row at a time would stutter. Reading a
-                // blown-up page is paging anyway, not gliding.
-                let step = (h / 2).max(1) as i32;
+                // A row per press (a pane for PgUp/PgDn), clamped to the foot
+                // of the page so the bottom is never skipped. A step is one
+                // placement, so it is cheap enough to glide.
                 let cur = self.img_scroll as i32;
-                let next = (cur + delta.signum() * step).clamp(0, max as i32);
-                // A last half-step lands on the foot of the page rather than
-                // sailing past it, so the bottom is never skipped.
+                let next = (cur + delta).clamp(0, max as i32);
                 if next != cur {
-                    // No render here: the loop draws once per key, and an
-                    // inline one placed every band twice.
+                    // No render here: the loop draws once per key.
                     self.img_scroll = next as u16;
                     return;
                 }
