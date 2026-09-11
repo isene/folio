@@ -901,7 +901,7 @@ fn choose_document(cols: u16, rows: u16) -> Option<PathBuf> {
 
         let key = Input::getchr(None).unwrap_or_default();
         match key.as_str() {
-            "q" | "Q" | "ESC" => return None,
+            "q" | "Q" => return None,
             "o" | "O" | "ENTER" => {
                 let raw = foot.ask_with_bg("open: ", "", 17);
                 if raw.trim().is_empty() { continue; }
@@ -1096,7 +1096,7 @@ fn main() {
         if !matches!(k, "g" | "G") { app.count.clear(); }
 
         match k {
-            "q" | "Q" | "ESC" => break,
+            "q" | "Q" => break,
             "RESIZE" => { app.clear_image(); app.layout(); Crust::clear_screen(); }
             "m" | "M" | "F1" | "F2" | "F3" => {
                 app.clear_image();
