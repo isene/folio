@@ -71,6 +71,7 @@ struct Config {
     /// folio edits the source and leaves the rendering to you until you
     /// name a command here.
     build_hl: String,
+    build_html: String,
     /// Where `--index` looks when given no directory.
     library: String,
 }
@@ -88,6 +89,9 @@ impl Config {
             build_tex: "pdflatex -interaction=nonstopmode {src}".into(),
             build_md: "pandoc {src} -o {out}".into(),
             build_hl: String::new(),
+            // A page made in a browser is printed by one: same look, same
+            // page breaks. Chrome's own name on most systems.
+            build_html: "google-chrome --headless --disable-gpu --no-pdf-header-footer --print-to-pdf={out} {src}".into(),
             library: format!("{}/Main", home),
         };
         let path = pdf::folio_dir().join("config");
@@ -106,6 +110,7 @@ impl Config {
                 "build_tex" => c.build_tex = v,
                 "build_md" => c.build_md = v,
                 "build_hl" => c.build_hl = v,
+                "build_html" => c.build_html = v,
                 "library" => c.library = v,
                 _ => {}
             }
@@ -682,6 +687,7 @@ impl App {
         let cmd = match ext.as_str() {
             "tex" => self.cfg.build_tex.clone(),
             "hl" => self.cfg.build_hl.clone(),
+            "html" => self.cfg.build_html.clone(),
             _ => self.cfg.build_md.clone(),
         };
         // No command for this kind of source: the edit is saved and the PDF
@@ -842,7 +848,7 @@ impl App {
   Ctrl-W       write the whole text beside the PDF (asks before overwriting)\n\
   q            quit\n\n\
 {}\n\
-  Config is ~/.folio/config: mode, split, editor, build_tex, build_md, library.\n\
+  Config is ~/.folio/config: mode, split, editor, build_tex, build_md, build_hl, build_html, library.\n\
   Position is remembered per document in ~/.folio/state.\n\
   Build the corpus index with: folio --index [dir]\n",
             style::bold(&format!("  folio {}, terminal PDF reader", VERSION)),

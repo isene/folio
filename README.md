@@ -12,7 +12,7 @@ A PDF is two documents in one: the words, and the page they were set on. Most re
 
 - **Read a page at full width**: `z` in page mode blows the page up until it is as wide as the terminal, and `↑` `↓` walk down it a row at a time, `PgUp` `PgDn` a screen. `+` and `-` step the zoom. Small print in a scan becomes readable without leaving the terminal.
 - **Three modes** on `F1` `F2` `F3`, or cycled with `m`: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
-- **Edit the real document**: `e` opens the `.md` or `.tex` sitting beside the PDF, rebuilds it on save, and reloads the page. A small change is a real edit, not a patch painted over the page.
+- **Edit the real document**: `e` opens the `.md`, `.tex` or `.html` sitting beside the PDF, rebuilds it on save, and reloads the page. A small change is a real edit, not a patch painted over the page.
 - **Corpus search**: `s` searches every indexed PDF, not just the open one, and opens the document on the page that carries the phrase.
 - **Quote with a citation**: `y` copies the page's text with the file name and page number attached.
 - **Reads scans too**: a scanned PDF has no text layer, so folio says so and shows you the page.
@@ -72,7 +72,7 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 
 A PDF cannot be edited as text. It places each glyph at a fixed coordinate, and the font it carries usually holds only the characters the document already uses. So a replacement of a different length mis-spaces the line, and a character the font lacks cannot be typed at all.
 
-What works is editing the source. If `notes.hl`, `paper.md` or `book.tex` sits beside the PDF, `e` opens that, and saving rebuilds the PDF and reloads the page. A HyperList is looked for first, since that is often the file the document was written in. In split mode you edit on the left and see the result on the right. The build commands are configurable, and default to `pandoc` for Markdown and `pdflatex` for LaTeX. `build_hl` is empty by default, since a HyperList has no one way to become a PDF: with nothing set, `e` saves your edit and leaves the PDF alone rather than half-rebuilding it.
+What works is editing the source. If `notes.hl`, `paper.md` or `book.tex` sits beside the PDF, `e` opens that, and saving rebuilds the PDF and reloads the page. A HyperList is looked for first, since that is often the file the document was written in. In split mode you edit on the left and see the result on the right. The build commands are configurable, and default to `pandoc` for Markdown, `pdflatex` for LaTeX, and a headless Chrome print (`build_html`) for a page written as HTML. `build_hl` is empty by default, since a HyperList has no one way to become a PDF: with nothing set, `e` saves your edit and leaves the PDF alone rather than half-rebuilding it.
 
 With no source beside it, `e` gives you the extracted text in a `.txt` sidecar. That is a note about the document, not the document.
 
