@@ -1145,7 +1145,8 @@ fn main() {
                 else if app.g_pending { app.goto_counted(false); }
                 else { app.g_pending = true; }
             }
-            "G" => app.goto_counted(true),
+            "G" | "END" => app.goto_counted(true),
+            "HOME" => app.goto_counted(false),
             "/" => app.find(),
             "n" => app.next_hit(false),
             "N" => app.next_hit(true),
