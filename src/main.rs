@@ -227,7 +227,8 @@ struct App {
     live: Vec<String>,
     status: Option<(String, u8)>,
     needle: String,
-    hits: Vec<usize>,
+    /// Every match in the document: (page, non-blank characters before it).
+    hits: Vec<(usize, usize)>,
     hit: usize,
     /// Digits typed so far, waiting for the key that uses them: `10g`.
     count: String,
@@ -416,12 +417,8 @@ impl App {
             for t in &lines[start..end] {
                 let t = t.as_str();
                 // A hit on this page is worth seeing in the text too.
-                if !self.needle.is_empty()
-                    && t.to_lowercase().contains(&self.needle.to_lowercase()) {
-                    out.push_str(&style::fg(&t, HIT_FG));
-                } else {
-                    out.push_str(&t);
-                }
+                if self.needle.is_empty() { out.push_str(t); }
+                else { out.push_str(&highlight(t, &self.needle)); }
                 out.push('\n');
             }
             if lines.is_empty() {
@@ -627,34 +624,69 @@ impl App {
         self.scroll = next as usize;
     }
 
-    /// Find across the whole document, not just this page. Lands on the
-    /// first page that carries it; `n` walks the rest.
+    /// Find across the whole document. Lands on the first match at or after
+    /// the place being read, scrolled into view; `n` and `N` walk the rest.
     fn find(&mut self) {
         let q = self.footer.ask_with_bg("/", "", 17);
         if q.trim().is_empty() { self.needle.clear(); self.hits.clear(); return; }
         self.needle = q.trim().to_string();
-        let lc = self.needle.to_lowercase();
-        self.hits = self.text.iter().enumerate()
-            .filter(|(_, t)| t.to_lowercase().contains(&lc))
-            .map(|(i, _)| i).collect();
+        let nd = lower1(&self.needle);
+        self.hits.clear();
+        for (p, text) in self.text.iter().enumerate() {
+            let chars: Vec<char> = text.chars().collect();
+            let lc = lower1(text);
+            let mut i = 0;
+            while i + nd.len() <= lc.len() {
+                if lc[i..i + nd.len()] == nd[..] {
+                    let nw = chars[..i].iter().filter(|c| !c.is_whitespace()).count();
+                    self.hits.push((p, nw));
+                    i += nd.len();
+                } else { i += 1; }
+            }
+        }
         if self.hits.is_empty() {
             self.set_status(&format!("{}, not in this document", self.needle), 196);
             return;
         }
-        // Start from the page being read, so `/` never sends you backwards.
-        self.hit = self.hits.iter().position(|&p| p >= self.page).unwrap_or(0);
-        let p = self.hits[self.hit];
-        self.goto(p);
-        self.set_status(&format!("{}, {} page(s)", self.needle, self.hits.len()), 46);
+        let (page, scroll) = (self.page, self.scroll);
+        self.hit = self.hits.iter().position(|&(p, nw)|
+            p > page || (p == page && self.hit_line(p, nw) >= scroll)).unwrap_or(0);
+        self.show_hit();
+        let mut pages: Vec<usize> = self.hits.iter().map(|h| h.0).collect();
+        pages.dedup();
+        self.set_status(&format!("{}: {} match(es) on {} page(s)",
+            self.needle, self.hits.len(), pages.len()), 46);
     }
 
     fn next_hit(&mut self, back: bool) {
         if self.hits.is_empty() { return; }
         let n = self.hits.len();
         self.hit = if back { (self.hit + n - 1) % n } else { (self.hit + 1) % n };
-        let p = self.hits[self.hit];
-        self.goto(p);
+        self.show_hit();
         self.set_status(&format!("{}  {}/{}", self.needle, self.hit + 1, n), 46);
+    }
+
+    /// Turn to the current hit's page and scroll its line a third down.
+    fn show_hit(&mut self) {
+        let (p, nw) = self.hits[self.hit];
+        self.goto(p);
+        let line = self.hit_line(p, nw);
+        self.scroll = line.saturating_sub(self.left.h as usize / 3);
+    }
+
+    fn text_width(&self) -> usize { (self.left.w.saturating_sub(1) as usize).max(8) }
+
+    /// The wrapped line, at the current width, holding the character that
+    /// has `nw` non-blank characters before it on page `p`. Counting
+    /// non-blank characters survives whatever wrapping does to spaces.
+    fn hit_line(&self, p: usize, nw: usize) -> usize {
+        let mut seen = 0;
+        for (i, l) in wrap(&self.text[p], self.text_width()).iter().enumerate() {
+            let n = l.chars().filter(|c| !c.is_whitespace()).count();
+            if seen + n > nw { return i; }
+            seen += n;
+        }
+        0
     }
 
     /// Edit the document. With a source beside it, that source is what you
@@ -923,6 +955,33 @@ fn choose_document(cols: u16, rows: u16) -> Option<PathBuf> {
 /// kept on the first line of each source line, because `pdftotext -layout`
 /// uses it to stand columns side by side, and a slide's text is nothing but
 /// columns.
+/// One lowercase character per character, so positions line up with the
+/// original text (a full lowercasing can change the count).
+fn lower1(s: &str) -> Vec<char> {
+    s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
+}
+
+/// The line with every occurrence of `needle` in the hit colour.
+fn highlight(line: &str, needle: &str) -> String {
+    let nd = lower1(needle);
+    let chars: Vec<char> = line.chars().collect();
+    let lc = lower1(line);
+    if nd.is_empty() { return line.to_string(); }
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if i + nd.len() <= lc.len() && lc[i..i + nd.len()] == nd[..] {
+            let seg: String = chars[i..i + nd.len()].iter().collect();
+            out.push_str(&style::bold(&style::fg(&seg, HIT_FG)));
+            i += nd.len();
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines() {
