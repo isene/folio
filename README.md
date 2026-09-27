@@ -65,6 +65,7 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 | `w` `W` | widen / narrow the text pane in split mode, as in pointer |
 | `Ctrl-B` | borders: none, page pane, both, text pane |
 | `Ctrl-W` | write the whole text beside the PDF, asking first if that file exists |
+| `Ctrl-A` | a Claude session about the page on screen (`claude` on the PATH); `/exit` comes back |
 | `?` | help |
 | `q` | quit |
 

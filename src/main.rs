@@ -522,6 +522,23 @@ impl App {
 
     fn set_status(&mut self, msg: &str, c: u8) { self.status = Some((msg.to_string(), c)); }
 
+    /// Ctrl+A, as in every Fe2O3 app: a Claude session about the page on
+    /// screen. Claude can open the PDF itself for the rest.
+    fn claude(&mut self) {
+        self.clear_image();
+        let text = self.text.get(self.page).map(|t| t.trim()).unwrap_or("");
+        let ctx = format!(
+            "{}, page {} of {}. The text of this page:\n\n{}\n",
+            self.path.display(), self.page + 1, self.pages,
+            if text.is_empty() { "(this page has no text layer; it is a picture)" } else { text },
+        );
+        let intro = format!("I am in folio, my PDF reader, reading {}.", self.path.display());
+        let started = crust::claude_session("Folio", &intro, &ctx);
+        self.layout();
+        Crust::clear_screen();
+        if !started { self.set_status("claude is not on the PATH", 196); }
+    }
+
     /// Move the split divider, `w` wider and `W` narrower, the same keys
     /// pointer uses. Remembered, so the width you settle on is the width
     /// the next document opens at.
@@ -878,6 +895,7 @@ impl App {
   w W          widen / narrow the text pane in split mode\n\
   Ctrl-B       borders: none, page, both, text\n\
   Ctrl-W       write the whole text beside the PDF (asks before overwriting)\n\
+  Ctrl-A       ask Claude about this page\n\
   q            quit\n\n\
 {}\n\
   Config is ~/.folio/config: mode, split, editor, build_tex, build_md, build_hl, build_html, library.\n\
@@ -1228,6 +1246,7 @@ fn main() {
             "w" => app.divider(true),
             "W" => app.divider(false),
             "C-W" => app.write_text(),
+            "C-A" => app.claude(),
             "?" => app.help(),
             _ => {}
         }
