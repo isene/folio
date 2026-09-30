@@ -511,7 +511,7 @@ impl App {
         let left = match self.status.take() {
             Some((msg, c)) => style::fg(&format!(" {}", msg), c),
             None => style::fg(
-                " q:Quit  F1/F3/m:Mode  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
+                " q:Quit  t/p/v:Mode  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
                 DIM_FG),
         };
         let version = format!("folio v{} ", VERSION);
@@ -878,7 +878,7 @@ impl App {
 
     fn help(&mut self) {
         let text = format!("\n{}\n\n\
-  F1 F3        text / split (m reaches page)\n\
+  t p v        text / page / split\n\
   m M          cycle the modes forward / back\n\
   j k ↑ ↓      scroll, turning the page at either end\n\
   Space b      next / previous page\n\
@@ -1175,11 +1175,12 @@ fn main() {
         match k {
             "q" | "Q" => break,
             "RESIZE" => { app.clear_image(); app.layout(); Crust::clear_screen(); }
-            "m" | "M" | "F1" | "F3" => {
+            "m" | "M" | "t" | "p" | "v" => {
                 app.clear_image();
                 app.mode = match k {
-                    "F1" => Mode::Text,
-                    "F3" => Mode::Split,
+                    "t"  => Mode::Text,
+                    "p"  => Mode::Page,
+                    "v"  => Mode::Split,
                     "m"  => app.mode.next(),
                     _    => app.mode.next().next(),
                 };
