@@ -527,7 +527,7 @@ impl App {
         let left = match self.status.take() {
             Some((msg, c)) => style::fg(&format!(" {}", msg), c),
             None => style::fg(
-                " q:Quit  t/p/v:Mode  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
+                " q:Quit  t/p/v:Mode  x:Swap  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
                 DIM_FG),
         };
         let version = format!("folio v{} ", VERSION);
