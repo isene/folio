@@ -60,6 +60,9 @@ struct Config {
     mode: Mode,
     /// Share of the width the text pane takes in Split, in percent.
     split: u16,
+    /// True when Split shows the page on the left and the text on the
+    /// right. `page_side = left` in the file; `x` swaps.
+    page_left: bool,
     /// 0 none, 1 the page pane, 2 both, 3 the text pane. Same four states
     /// pointer cycles, and the same key.
     border: u16,
@@ -82,6 +85,7 @@ impl Config {
         let mut c = Config {
             mode: Mode::Text,
             split: 50,
+            page_left: false,
             border: 0,
             border_fg: 240,
             editor: std::env::var("EDITOR").unwrap_or_else(|_| "scribe".into()),
@@ -104,6 +108,7 @@ impl Config {
             match k.trim() {
                 "mode" => c.mode = Mode::parse(&v),
                 "split" => if let Ok(n) = v.parse() { c.split = n },
+                "page_side" => c.page_left = v.eq_ignore_ascii_case("left"),
                 "border" => if let Ok(n) = v.parse::<u16>() { c.border = n % 4 },
                 "border_fg" => if let Ok(n) = v.parse() { c.border_fg = n },
                 "editor" => c.editor = v,
@@ -124,10 +129,17 @@ impl Config {
 fn save_setting(key: &str, value: &str) {
     let file = pdf::folio_dir().join("config");
     let old = std::fs::read_to_string(&file).unwrap_or_default();
+    let _ = std::fs::create_dir_all(pdf::folio_dir());
+    let _ = std::fs::write(file, with_setting(&old, key, value));
+}
+
+/// The config text with one key set. The key must match whole: saving
+/// `border` once rewrote the `border_fg` line too.
+fn with_setting(old: &str, key: &str, value: &str) -> String {
     let mut out = String::new();
     let mut seen = false;
     for line in old.lines() {
-        if line.trim_start().starts_with(key) && line.contains('=') {
+        if line.split_once('=').is_some_and(|(k, _)| k.trim() == key) {
             out.push_str(&format!("{} = {}\n", key, value));
             seen = true;
         } else {
@@ -136,8 +148,7 @@ fn save_setting(key: &str, value: &str) {
         }
     }
     if !seen { out.push_str(&format!("{} = {}\n", key, value)); }
-    let _ = std::fs::create_dir_all(pdf::folio_dir());
-    let _ = std::fs::write(file, out);
+    out
 }
 
 /// Where you were, per document. One tab-separated line each, in
@@ -213,6 +224,8 @@ struct App {
     mode: Mode,
     cfg: Config,
     header: Pane,
+    /// `left` is the text pane and `right` the page pane, named for where
+    /// they sit until `x` swaps them in split mode.
     left: Pane,
     right: Pane,
     footer: Pane,
@@ -285,8 +298,11 @@ impl App {
             Mode::Page => (cols, 1, 2, cols.saturating_sub(2).max(1)),
             Mode::Split => {
                 let split = (cols as u32 * self.cfg.split as u32 / 100) as u16;
-                (2, split.saturating_sub(1).max(1),
-                 split + 3, cols.saturating_sub(split).saturating_sub(3).max(1))
+                let tw = split.saturating_sub(1).max(1);
+                let pw = cols.saturating_sub(split).saturating_sub(3).max(1);
+                // Two columns between the panes either way, one for each
+                // pane's border.
+                if self.cfg.page_left { (pw + 4, tw, 2, pw) } else { (2, tw, split + 3, pw) }
             }
         };
         self.left = Pane::new(lx, y, lw, h, TEXT_BG_FG, 0);
@@ -550,6 +566,20 @@ impl App {
         let next = if wider { self.cfg.split + 5 } else { self.cfg.split.saturating_sub(5) };
         self.cfg.split = next.clamp(20, 80);
         save_setting("split", &self.cfg.split.to_string());
+        self.clear_image();
+        self.layout();
+        Crust::clear_screen();
+    }
+
+    /// Swap the two sides of split mode: the page goes left and the text
+    /// right, or back. Remembered, like the divider.
+    fn swap_sides(&mut self) {
+        if self.mode != Mode::Split {
+            self.set_status("the sides only swap in split mode (v)", DIM_FG);
+            return;
+        }
+        self.cfg.page_left = !self.cfg.page_left;
+        save_setting("page_side", if self.cfg.page_left { "left" } else { "right" });
         self.clear_image();
         self.layout();
         Crust::clear_screen();
@@ -893,12 +923,13 @@ impl App {
   e            edit: the source if there is one, else a text sidecar\n\
   y Y          yank this page with a citation / the document's path\n\
   w W          widen / narrow the text pane in split mode\n\
-  Ctrl-B       borders: none, page, both, text\n\
+  x            split mode: swap the sides, page left or right\n\
+  Ctrl-B      borders: none, page, both, text\n\
   Ctrl-W       write the whole text beside the PDF (asks before overwriting)\n\
   Ctrl-A       ask Claude about this page\n\
   q            quit\n\n\
 {}\n\
-  Config is ~/.folio/config: mode, split, editor, build_tex, build_md, build_hl, build_html, library.\n\
+  Config is ~/.folio/config: mode, split, page_side, editor, build_tex, build_md, build_hl, build_html, library.\n\
   Position is remembered per document in ~/.folio/state.\n\
   Build the corpus index with: folio --index [dir]\n",
             style::bold(&format!("  folio {}, terminal PDF reader", VERSION)),
@@ -1245,6 +1276,7 @@ fn main() {
             }
             "w" => app.divider(true),
             "W" => app.divider(false),
+            "x" => app.swap_sides(),
             "C-W" => app.write_text(),
             "C-A" => app.claude(),
             "?" => app.help(),
@@ -1384,28 +1416,24 @@ mod tests {
         let file = tmp.join(".folio/config");
         std::fs::write(&file,
             "# my reader\nmode = split\nsplit = 50\neditor = scribe\n").unwrap();
-        // save_split rewrites one line; do the same transform here so the
-        // test does not have to move HOME out from under the other tests.
+        // save_setting writes under HOME; with_setting is the part of it
+        // that can be tested without moving HOME from under the other tests.
         let old = std::fs::read_to_string(&file).unwrap();
-        let mut out = String::new();
-        let mut seen = false;
-        for line in old.lines() {
-            if line.trim_start().starts_with("split") && line.contains('=') {
-                out.push_str("split = 65\n");
-                seen = true;
-            } else {
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-        assert!(seen);
-        std::fs::write(&file, &out).unwrap();
+        std::fs::write(&file, with_setting(&old, "split", "65")).unwrap();
         let back = std::fs::read_to_string(&file).unwrap();
         assert!(back.contains("# my reader"), "the comment survives");
         assert!(back.contains("mode = split"), "other settings survive");
         assert!(back.contains("split = 65"), "the new width is in");
         assert!(!back.contains("split = 50"), "and the old one is gone");
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_setting_is_saved_under_its_whole_name_only() {
+        let old = "border_fg = 240\nborder = 1\n";
+        assert_eq!(with_setting(old, "border", "2"), "border_fg = 240\nborder = 2\n");
+        assert_eq!(with_setting(old, "page_side", "left"),
+            "border_fg = 240\nborder = 1\npage_side = left\n");
     }
 
     #[test]

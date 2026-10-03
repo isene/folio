@@ -63,6 +63,7 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 | `y` `Y` | yank this page with a citation / the document's path |
 | `o` | open another document |
 | `w` `W` | widen / narrow the text pane in split mode, as in pointer |
+| `x` | in split mode: swap the sides, page left or right |
 | `Ctrl-B` | borders: none, page pane, both, text pane |
 | `Ctrl-W` | write the whole text beside the PDF, asking first if that file exists |
 | `Ctrl-A` | a Claude session about the page on screen (`claude` on the PATH); `/exit` comes back |
@@ -88,7 +89,7 @@ Indexing extracts and caches the text of every PDF it finds. A directory of 39 d
 
 ## Files
 
-- `~/.folio/config`: `mode`, `split`, `border`, `border_fg`, `editor`, `build_tex`, `build_md`, `build_hl`, `library`. All optional.
+- `~/.folio/config`: `mode`, `split`, `page_side` (`left` or `right`), `border`, `border_fg`, `editor`, `build_tex`, `build_md`, `build_hl`, `library`. All optional.
 - `~/.folio/state`: where you were in each document, one tab-separated line each.
 - `~/.folio/index`: the list of indexed documents.
 - `~/.folio/cache/`: extracted text and rendered pages. Keyed by file and modification time, so a rebuilt PDF never shows a stale page. Safe to delete.
