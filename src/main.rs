@@ -77,6 +77,12 @@ struct Config {
     build_html: String,
     /// Where `--index` looks when given no directory.
     library: String,
+    /// The picture `i` puts on a page: a signature, most often. Empty
+    /// until the config names one.
+    stamp: String,
+    /// How wide that picture starts out, in percent of the page's width.
+    /// The width last written is kept, so a signature is sized once.
+    stamp_width: f32,
 }
 
 impl Config {
@@ -97,6 +103,8 @@ impl Config {
             // page breaks. Chrome's own name on most systems.
             build_html: "google-chrome --headless --disable-gpu --no-pdf-header-footer --print-to-pdf={out} {src}".into(),
             library: format!("{}/Main", home),
+            stamp: String::new(),
+            stamp_width: 25.0,
         };
         let path = pdf::folio_dir().join("config");
         let Ok(text) = std::fs::read_to_string(path) else { return c };
@@ -117,6 +125,8 @@ impl Config {
                 "build_hl" => c.build_hl = v,
                 "build_html" => c.build_html = v,
                 "library" => c.library = v,
+                "stamp" => c.stamp = v,
+                "stamp_width" => if let Ok(n) = v.parse::<f32>() { c.stamp_width = n.clamp(2.0, 100.0) },
                 _ => {}
             }
         }
@@ -208,6 +218,45 @@ fn save_page_in(file: &Path, path: &Path, page: usize) {
     let _ = std::fs::write(file, out);
 }
 
+/// A picture being placed on the page: where its centre is and how wide
+/// it is, as parts of the page's width and height.
+struct Stamp {
+    image: PathBuf,
+    fx: f32,
+    fy: f32,
+    fw: f32,
+    /// The preview on disk and what it was made from, so a repaint that
+    /// moved nothing starts no program.
+    made: Option<(PathBuf, (f32, f32, f32, u32))>,
+    /// Each preview gets a new file name: glow knows a picture by its path.
+    serial: u32,
+}
+
+impl Stamp {
+    /// The page with the picture on it, as a PNG `px` pixels high.
+    fn preview(&mut self, doc: &Path, page: usize, px: u32) -> Result<PathBuf, String> {
+        let want = (self.fx, self.fy, self.fw, px);
+        if let Some((file, was)) = &self.made {
+            if *was == want { return Ok(file.clone()); }
+        }
+        self.serial += 1;
+        let out = pdf::folio_dir().join("cache")
+            .join(format!("stamp-{}-{}.png", std::process::id(), self.serial));
+        pdf::stamp(doc, page, &self.image, (self.fx, self.fy, self.fw),
+            pdf::StampTo::Png(&out, px))?;
+        if let Some((old, _)) = self.made.replace((out.clone(), want)) {
+            let _ = std::fs::remove_file(old);
+        }
+        Ok(out)
+    }
+}
+
+impl Drop for Stamp {
+    fn drop(&mut self) {
+        if let Some((file, _)) = &self.made { let _ = std::fs::remove_file(file); }
+    }
+}
+
 struct App {
     path: PathBuf,
     /// The whole path, for the header. Worked out when a document is
@@ -251,6 +300,8 @@ struct App {
     /// A `g` has been pressed and is waiting to see whether a second
     /// one follows, which is vim's `gg`.
     g_pending: bool,
+    /// Set while `i` has a picture on the page waiting to be placed.
+    stamp: Option<Stamp>,
 }
 
 impl App {
@@ -271,7 +322,7 @@ impl App {
             cols, rows,
             img: None, shown: None, live: Vec::new(), status: None,
             needle: String::new(), hits: Vec::new(), hit: 0,
-            count: String::new(), g_pending: false,
+            count: String::new(), g_pending: false, stamp: None,
         };
         app.layout();
         app
@@ -459,7 +510,19 @@ impl App {
             // a fitted render up would just enlarge its pixels.
             let px = ((h as f32) * self.zoom).round().max(1.0) as u32
                 * (cell_h.max(1) as u32);
-            match pdf::render_page(&self.path, self.page, px) {
+            // While a picture is being placed, the page shown is the page
+            // with the picture on it, drawn by the same script that will
+            // write it: what is on screen is what Enter saves.
+            let page = match self.stamp.as_mut().map(|s| s.preview(&self.path, self.page, px)) {
+                Some(Ok(file)) => Some(file),
+                Some(Err(e)) => {
+                    self.stamp = None;
+                    self.status = Some((format!("stamp: {}", e), 196));
+                    pdf::render_page(&self.path, self.page, px)
+                }
+                None => pdf::render_page(&self.path, self.page, px),
+            };
+            match page {
                 Some(file) => {
                     // The scroll offset is part of what is on screen, so a
                     // zoomed page that moved needs re-placing even though the
@@ -532,6 +595,9 @@ impl App {
         // Keys on the left, version on the right, as in every other app here.
         let left = match self.status.take() {
             Some((msg, c)) => style::fg(&format!(" {}", msg), c),
+            None if self.stamp.is_some() => style::fg(
+                " STAMP  h/j/k/l:Move  H/J/K/L:Fine  +/-:Size  Enter:Write a copy  Esc:Cancel",
+                HIT_FG),
             None => style::fg(
                 " q:Quit  t/p/v:Mode  x:Swap  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
                 DIM_FG),
@@ -908,6 +974,93 @@ impl App {
         self.set_status("", DIM_FG);
     }
 
+    /// `i`: put the configured picture on the page, to be moved into place.
+    fn stamp_start(&mut self) {
+        if self.image_box().is_none() {
+            self.set_status("the stamp needs the page on screen: p or v", DIM_FG);
+            return;
+        }
+        if self.cfg.stamp.is_empty() {
+            self.set_status("no picture to stamp: add stamp = <file> to ~/.folio/config", 196);
+            return;
+        }
+        let image = expand(&self.cfg.stamp);
+        if !image.exists() {
+            self.set_status(&format!("no such file: {}", image.display()), 196);
+            return;
+        }
+        // It starts in the middle of what is on screen, which on a zoomed
+        // page is a band of the page and not its middle.
+        let (rows, band) = (self.zoomed_rows() as f32, self.right.h as f32);
+        let fy = if rows > band { (self.img_scroll as f32 + band / 2.0) / rows } else { 0.5 };
+        self.stamp = Some(Stamp {
+            image, fx: 0.5, fy, fw: self.cfg.stamp_width / 100.0, made: None, serial: 0,
+        });
+    }
+
+    /// A key while a picture is being placed.
+    fn stamp_key(&mut self, k: &str) {
+        if k == "RESIZE" { self.clear_image(); self.layout(); Crust::clear_screen(); return; }
+        if k == "ENTER" { self.stamp_write(); return; }
+        if matches!(k, "ESC" | "q") {
+            self.stamp = None;
+            self.set_status("nothing stamped", DIM_FG);
+            return;
+        }
+        let Some(s) = self.stamp.as_mut() else { return };
+        // A step is a part of the page's width. Down the page the same
+        // distance is a smaller part, since a page is taller than wide.
+        let tall = s.made.as_ref().and_then(|(f, _)| pdf::png_dims(f))
+            .map(|(w, h)| w as f32 / h.max(1) as f32).unwrap_or(0.7);
+        let (step, fine) = (0.02, 0.002);
+        match k {
+            "h" | "LEFT" => s.fx -= step,
+            "l" | "RIGHT" => s.fx += step,
+            "k" | "UP" => s.fy -= step * tall,
+            "j" | "DOWN" => s.fy += step * tall,
+            "H" | "S-LEFT" => s.fx -= fine,
+            "L" | "S-RIGHT" => s.fx += fine,
+            "K" | "S-UP" => s.fy -= fine * tall,
+            "J" | "S-DOWN" => s.fy += fine * tall,
+            "+" | "=" => s.fw *= 1.1,
+            "-" | "_" => s.fw /= 1.1,
+            _ => {}
+        }
+        s.fx = s.fx.clamp(0.0, 1.0);
+        s.fy = s.fy.clamp(0.0, 1.0);
+        s.fw = s.fw.clamp(0.02, 1.0);
+    }
+
+    /// Enter: write the document, with the picture where it now sits, as
+    /// `<name>_signed.pdf` beside the original, and open that.
+    fn stamp_write(&mut self) {
+        let Some(s) = self.stamp.take() else { return };
+        let stem = self.path.file_stem().map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "document".into());
+        let out = self.path.with_file_name(format!("{}_signed.pdf", stem));
+        if out.exists() && !self.confirm(&format!("{}_signed.pdf is there already. Overwrite?", stem)) {
+            self.stamp = Some(s);
+            return;
+        }
+        match pdf::stamp(&self.path, self.page, &s.image, (s.fx, s.fy, s.fw), pdf::StampTo::Pdf(&out)) {
+            Ok(()) => {
+                // Only the size is kept: a signature wants the same width
+                // on the next contract, and never the same place.
+                let width = s.fw * 100.0;
+                if (width - self.cfg.stamp_width).abs() > 0.05 {
+                    self.cfg.stamp_width = width;
+                    save_setting("stamp_width", &format!("{:.1}", width));
+                }
+                save_page(&self.path, self.page);
+                self.path = out;
+                self.reload();
+                // The header has the whole path; the name is enough here.
+                self.set_status(&format!("wrote {}_signed.pdf", stem), 46);
+            }
+            Err(e) => self.set_status(&format!("stamp: {}", e), 196),
+        }
+    }
+
     fn help(&mut self) {
         let text = format!("\n{}\n{}\n{}\n{}",
             style::bold(&format!("  folio {}, terminal PDF reader", VERSION)),
@@ -956,6 +1109,8 @@ const HELP_KEYS: &str = "
   y Y          yank this page with a citation / the document's path
   w W          widen / narrow the text pane in split mode
   x            split mode: swap the sides, page left or right
+  i            stamp the config's picture on the page (a signature):
+               h j k l move it, + - size it, Enter writes <name>_signed.pdf
   Ctrl-B       borders: none, page, both, text
   Ctrl-W       write the whole text beside the PDF (asks before overwriting)
   Ctrl-A       ask Claude about this page
@@ -963,7 +1118,7 @@ const HELP_KEYS: &str = "
 ";
 
 const HELP_FILES: &str = "
-  Config is ~/.folio/config: mode, split, page_side, editor, build_tex, build_md, build_hl, build_html, library.
+  Config is ~/.folio/config: mode, split, page_side, editor, build_tex, build_md, build_hl, build_html, library, stamp.
   Position is remembered per document in ~/.folio/state.
   Build the corpus index with: folio --index [dir]
 ";
@@ -1241,6 +1396,8 @@ fn main() {
         // else throws the half-typed count away, so a stray `1` cannot
         // change where the next keypress lands.
         let k = key.as_str();
+        // A picture being placed takes every key until Enter or Esc.
+        if app.stamp.is_some() { app.stamp_key(k); continue; }
         if k.len() == 1 && k.chars().next().unwrap().is_ascii_digit() {
             if app.count.len() < 5 { app.count.push_str(k); }
             continue;
@@ -1324,6 +1481,7 @@ fn main() {
             "x" => app.swap_sides(),
             "C-W" => app.write_text(),
             "C-A" => app.claude(),
+            "i" => app.stamp_start(),
             "?" => app.help(),
             _ => {}
         }

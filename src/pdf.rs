@@ -1,7 +1,8 @@
 //! Everything that touches a PDF or the cache under `~/.folio/`.
 //!
 //! Two outside tools do the heavy work, and both are already on the box:
-//! `pdftotext` for the text layer and `mutool` for page images. Neither is
+//! `pdftotext` for the text layer and `mutool` for page images, and for
+//! drawing a picture onto a page (the stamp). Neither is
 //! run twice for the same answer, text is extracted once per document and
 //! kept, page images are rendered once per (page, height) and kept. A
 //! document that has not changed costs one `stat` to confirm it.
@@ -158,6 +159,112 @@ pub fn prefetch_bg(path: &Path, page: usize, pages: usize, height_px: u32) {
         }
         BUSY.store(false, Ordering::SeqCst);
     });
+}
+
+/// What `mutool run` draws a picture onto a page with. mutool is here
+/// already for the page images, and it edits a PDF too, so a stamp costs no
+/// new tool and no PDF code of folio's own.
+///
+/// Arguments: pdf, page (from 1), picture, then the picture's centre and
+/// width as parts of the page's width and height, then `png` with a file
+/// and a height in pixels for a preview, or `pdf` with a file to save.
+const STAMP_JS: &str = r#"
+var doc = new PDFDocument(scriptArgs[0]);
+var n = parseInt(scriptArgs[1]) - 1;
+var image = new Image(scriptArgs[2]);
+var fx = parseFloat(scriptArgs[3]), fy = parseFloat(scriptArgs[4]), fw = parseFloat(scriptArgs[5]);
+var page = doc.loadPage(n);
+var b = page.getBounds();      // the page as shown: origin top left, y down
+var p = page.getTransform();   // from the PDF's own numbers to the page as shown
+// The stamp is placed on the page as shown, so it needs the way back.
+var det = p[0]*p[3] - p[1]*p[2];
+var t = [p[3]/det, -p[1]/det, -p[2]/det, p[0]/det, 0, 0];
+t[4] = -(p[4]*t[0] + p[5]*t[2]);
+t[5] = -(p[4]*t[1] + p[5]*t[3]);
+var W = b[2] - b[0], H = b[3] - b[1];
+var w = fw * W, h = w * image.getHeight() / image.getWidth();
+var x = b[0] + fx * W - w / 2, y = b[1] + fy * H - h / 2;
+// A picture fills the square from 0,0 to 1,1 with its foot at the bottom.
+// As shown, that square has to land on x, y, w, h; times t for the PDF.
+var f = [w, 0, 0, -h, x, y + h];
+var m = [f[0]*t[0] + f[1]*t[2], f[0]*t[1] + f[1]*t[3],
+         f[2]*t[0] + f[3]*t[2], f[2]*t[1] + f[3]*t[3],
+         f[4]*t[0] + f[5]*t[2] + t[4], f[4]*t[1] + f[5]*t[3] + t[5]];
+for (var i = 0; i < 6; i++) m[i] = Math.round(m[i] * 1000) / 1000;
+
+function has(dict, key) { var v = dict.get(key); return v && !v.isNull(); }
+function sub(dict, key) {
+    var v = dict.get(key);
+    if (!v || !v.isDictionary()) { v = doc.newDictionary(); dict.put(key, v); }
+    return v;
+}
+var obj = page.getObject();
+// A page may get its fonts from the document rather than hold them itself.
+var res = obj.getInheritable("Resources");
+if (!res || !res.isDictionary()) res = doc.newDictionary();
+obj.put("Resources", res);
+var xo = sub(res, "XObject"), gs = sub(res, "ExtGState");
+// A second stamp gets a name of its own, or it would replace the first.
+var k = 1;
+while (k < 1000 && has(xo, "FolioStamp" + k)) k++;
+xo.put("FolioStamp" + k, doc.addImage(image));
+// Multiply: white in the picture leaves the page as it was, ink darkens
+// it. So the picture's paper never covers the text it sits on.
+if (!has(gs, "FolioMul")) {
+    var mul = doc.newDictionary();
+    mul.put("Type", doc.newName("ExtGState"));
+    mul.put("BM", doc.newName("Multiply"));
+    gs.put("FolioMul", doc.addObject(mul));
+}
+// The page's own drawing goes between q and Q, so whatever it left
+// changed (a scale, a clip) does not move or cut the picture.
+var all = doc.newArray();
+all.push(doc.addStream("q\n"));
+var c = obj.get("Contents");
+if (c && c.isArray()) { for (var i = 0; i < c.length; i++) all.push(c.get(i)); }
+else if (c && !c.isNull()) all.push(c);
+all.push(doc.addStream("\nQ q /FolioMul gs " + m.join(" ") + " cm /FolioStamp" + k + " Do Q\n"));
+obj.put("Contents", all);
+
+if (scriptArgs[6] == "png") {
+    var s = parseFloat(scriptArgs[8]) / H;
+    doc.loadPage(n).toPixmap([s, 0, 0, s, 0, 0], ColorSpace.DeviceRGB, false).saveAsPNG(scriptArgs[7]);
+} else {
+    doc.save(scriptArgs[7], "compress");
+}
+"#;
+
+/// Where a stamped page goes: a preview picture of that height in pixels,
+/// or the whole document as a new PDF.
+pub enum StampTo<'a> { Png(&'a Path, u32), Pdf(&'a Path) }
+
+/// Draw `image` on a page. `at` is the picture's centre and its width, as
+/// parts of the page's width and height: (0.5, 0.5, 0.25) is the middle of
+/// the page, a quarter of the page wide. The document itself is not
+/// changed; the result is the file named in `to`.
+pub fn stamp(pdf: &Path, page: usize, image: &Path, at: (f32, f32, f32), to: StampTo)
+    -> Result<(), String>
+{
+    // Named by its own text, so a newer folio never runs an older script.
+    let script = cache_dir().join(format!("stamp-{:016x}.js", hash(STAMP_JS)));
+    if !script.exists() {
+        std::fs::write(&script, STAMP_JS).map_err(|e| format!("{}: {}", script.display(), e))?;
+    }
+    let (kind, out, px) = match to {
+        StampTo::Png(p, h) => ("png", p, h.to_string()),
+        StampTo::Pdf(p) => ("pdf", p, String::new()),
+    };
+    let o = Command::new("mutool").arg("run").arg(&script)
+        .arg(pdf).arg((page + 1).to_string()).arg(image)
+        .arg(at.0.to_string()).arg(at.1.to_string()).arg(at.2.to_string())
+        .arg(kind).arg(out).arg(px)
+        .output().map_err(|e| format!("mutool: {}", e))?;
+    if o.status.success() && out.exists() { return Ok(()); }
+    // The first line is the complaint; the rest says where in the script.
+    let err = String::from_utf8_lossy(&o.stderr);
+    let line = err.lines().find(|l| !l.trim().is_empty())
+        .unwrap_or("mutool could not stamp this page").trim();
+    Err(line.strip_prefix("Error: ").unwrap_or(line).to_string())
 }
 
 /// The source a PDF was built from, if it is sitting next to it under the

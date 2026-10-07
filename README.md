@@ -13,6 +13,7 @@ A PDF is two documents in one: the words, and the page they were set on. Most re
 - **Read a page at full width**: `z` in page mode blows the page up until it is as wide as the terminal, and `↑` `↓` walk down it a row at a time, `PgUp` `PgDn` a screen. `+` and `-` step the zoom. Small print in a scan becomes readable without leaving the terminal.
 - **Three modes** on `t` `p` `v`, or cycled with `m`: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
 - **Edit the real document**: `e` opens the `.md`, `.tex` or `.html` sitting beside the PDF, rebuilds it on save, and reloads the page. A small change is a real edit, not a patch painted over the page.
+- **Sign a PDF**: `i` puts a picture on the page, a signature most often. Move it, size it, and `Enter` writes a signed copy beside the original. No office program needed.
 - **Corpus search**: `s` searches every indexed PDF, not just the open one, and opens the document on the page that carries the phrase.
 - **Quote with a citation**: `y` copies the page's text with the file name and page number attached.
 - **Reads scans too**: a scanned PDF has no text layer, so folio says so and shows you the page.
@@ -64,6 +65,7 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 | `o` | open another document |
 | `w` `W` | widen / narrow the text pane in split mode, as in pointer |
 | `x` | in split mode: swap the sides, page left or right |
+| `i` | stamp the config's picture on the page (see below) |
 | `Ctrl-B` | borders: none, page pane, both, text pane |
 | `Ctrl-W` | write the whole text beside the PDF, asking first if that file exists |
 | `Ctrl-A` | a Claude session about the page on screen (`claude` on the PATH); `/exit` comes back |
@@ -78,6 +80,28 @@ What works is editing the source. If `notes.hl`, `paper.md` or `book.tex` sits b
 
 With no source beside it, `e` gives you the extracted text in a `.txt` sidecar. That is a note about the document, not the document.
 
+## Stamping a picture
+
+Name a picture in the config, your signature for one:
+
+```
+stamp = ~/signature.png
+```
+
+Then `i` in page or split mode puts it on the page in front of you.
+
+| Key | Action |
+|-----|--------|
+| `h` `j` `k` `l` or arrows | move it |
+| `H` `J` `K` `L` or Shift+arrows | move it a tenth as far |
+| `+` `-` | bigger / smaller |
+| `Enter` | write `<name>_signed.pdf` beside the original, and open it |
+| `Esc` | leave, nothing written |
+
+What you see while placing it is what gets written: the same `mutool` script draws both. The original file is never changed. The picture's white stays see-through, so a scanned signature on white paper does not cover the line it sits on. The width you end on is kept as `stamp_width`, in percent of the page's width, so a signature is sized once.
+
+Zoom in first (`z`, `+`) for a finer placement. It is a picture on the page, as a pen would leave. It is not a digital signature.
+
 ## Corpus search
 
 ```bash
@@ -89,7 +113,7 @@ Indexing extracts and caches the text of every PDF it finds. A directory of 39 d
 
 ## Files
 
-- `~/.folio/config`: `mode`, `split`, `page_side` (`left` or `right`), `border`, `border_fg`, `editor`, `build_tex`, `build_md`, `build_hl`, `library`. All optional.
+- `~/.folio/config`: `mode`, `split`, `page_side` (`left` or `right`), `border`, `border_fg`, `editor`, `build_tex`, `build_md`, `build_hl`, `library`, `stamp`, `stamp_width`. All optional.
 - `~/.folio/state`: where you were in each document, one tab-separated line each.
 - `~/.folio/index`: the list of indexed documents.
 - `~/.folio/cache/`: extracted text and rendered pages. Keyed by file and modification time, so a rebuilt PDF never shows a stale page. Safe to delete.
