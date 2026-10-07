@@ -210,6 +210,9 @@ fn save_page_in(file: &Path, path: &Path, page: usize) {
 
 struct App {
     path: PathBuf,
+    /// The whole path, for the header. Worked out when a document is
+    /// opened, never per repaint: asking the disk costs a few syscalls.
+    full: String,
     pages: usize,
     text: Vec<String>,
     page: usize,
@@ -257,8 +260,9 @@ impl App {
         let pages = pdf::page_count(&path);
         let page = saved_page(&path).min(pages.saturating_sub(1));
         let (cols, rows) = Crust::terminal_size();
+        let full = full_path(&path);
         let mut app = App {
-            path, pages, text, page, scroll: 0, zoom: 1.0, img_scroll: 0,
+            path, full, pages, text, page, scroll: 0, zoom: 1.0, img_scroll: 0,
             mode: cfg.mode, cfg,
             header: Pane::new(1, 1, cols, 1, 255, 236),
             left: Pane::new(1, 2, cols, rows.saturating_sub(2), TEXT_BG_FG, 0),
@@ -398,9 +402,7 @@ impl App {
     }
 
     fn render(&mut self) {
-        // Header: name, page, mode, and the source if there is one to rebuild.
-        let name = self.path.file_name().map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "?".into());
+        // Header: path, page, mode, and the source if there is one to rebuild.
         let src = pdf::source_for(&self.path)
             .and_then(|p| p.extension().map(|e| format!("  [{}]", e.to_string_lossy())))
             .unwrap_or_default();
@@ -419,8 +421,12 @@ impl App {
             } else { String::new() };
             format!("  {:.1}x{}", self.zoom, pos)
         };
-        self.header.set_text(&format!(" FOLIO  {}  page {}/{}  [{}]{}{}{}{}",
-            name, self.page + 1, self.pages, self.mode.name(), src, zoom, hits, count));
+        let rest = format!("  page {}/{}  [{}]{}{}{}{}",
+            self.page + 1, self.pages, self.mode.name(), src, zoom, hits, count);
+        let lead = " FOLIO  ";
+        let room = (self.cols as usize)
+            .saturating_sub(lead.len() + crust::display_width(&rest));
+        self.header.set_text(&format!("{}{}{}", lead, tail_fit(&self.full, room), rest));
         self.header.refresh();
 
         if self.mode != Mode::Page {
@@ -801,6 +807,7 @@ impl App {
     /// Re-read the document after it changed on disk. The cache is keyed by
     /// mtime, so this picks up the new text and new page images by itself.
     fn reload(&mut self) {
+        self.full = full_path(&self.path);
         self.text = pdf::text_pages(&self.path);
         self.pages = pdf::page_count(&self.path);
         self.page = self.page.min(self.pages.saturating_sub(1));
@@ -829,10 +836,8 @@ impl App {
     }
 
     fn yank_name(&mut self) {
-        let p = std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
-        let p = p.to_string_lossy().to_string();
-        crust::clipboard_copy(&p, "clipboard");
-        self.set_status(&format!("yanked {}", p), 46);
+        crust::clipboard_copy(&self.full, "clipboard");
+        self.set_status(&format!("yanked {}", self.full), 46);
     }
 
     fn yank(&mut self) {
@@ -888,10 +893,7 @@ impl App {
                 p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), page + 1));
         }
         out.push_str(&style::fg("\n  number to open, any other key to stay\n", DIM_FG));
-        self.left.set_text(&out);
-        self.left.full_refresh();
-        self.footer.say(" pick a number");
-        let k = Input::getchr(None).unwrap_or_default();
+        let k = self.overlay(&out, " pick a number");
         if let Ok(n) = k.parse::<usize>() {
             if n >= 1 && n <= hits.len().min(20) {
                 let (p, page) = hits[n - 1].clone();
@@ -907,43 +909,86 @@ impl App {
     }
 
     fn help(&mut self) {
-        let text = format!("\n{}\n\n\
-  t p v        text / page / split\n\
-  m M          cycle the modes forward / back\n\
-  j k ↑ ↓      scroll, turning the page at either end\n\
-  Space b      next / previous page\n\
-  z            page mode: full width, and back to the whole page\n\
-  + -          zoom in / out, between the whole page and full width\n\
-  gg G         first / last page\n\
-  10g          go to page 10\n\
-  / n N        find in this document, next, previous\n\
-  s            find across every indexed document\n\
-  o            open another document\n\
-  r            re-read this document after it changed on disk\n\
-  e            edit: the source if there is one, else a text sidecar\n\
-  y Y          yank this page with a citation / the document's path\n\
-  w W          widen / narrow the text pane in split mode\n\
-  x            split mode: swap the sides, page left or right\n\
-  Ctrl-B      borders: none, page, both, text\n\
-  Ctrl-W       write the whole text beside the PDF (asks before overwriting)\n\
-  Ctrl-A       ask Claude about this page\n\
-  q            quit\n\n\
-{}\n\
-  Config is ~/.folio/config: mode, split, page_side, editor, build_tex, build_md, build_hl, build_html, library.\n\
-  Position is remembered per document in ~/.folio/state.\n\
-  Build the corpus index with: folio --index [dir]\n",
+        let text = format!("\n{}\n{}\n{}\n{}",
             style::bold(&format!("  folio {}, terminal PDF reader", VERSION)),
+            HELP_KEYS,
             style::fg("  Editing a document that has a .md or .tex beside it edits THAT,\n  \
-                        rebuilds the PDF and reloads the page.", DIM_FG));
+                        rebuilds the PDF and reloads the page.", DIM_FG),
+            HELP_FILES);
+        self.overlay(&text, " any key to go back");
+    }
+
+    /// Show `text` over the whole screen and wait for one key, which is
+    /// returned. For the help and the corpus list: neither belongs in a
+    /// pane of the document, and in page mode the text pane is one column.
+    fn overlay(&mut self, text: &str, foot: &str) -> String {
         self.clear_image();
         self.left = Pane::new(1, 2, self.cols, self.rows.saturating_sub(2), TEXT_BG_FG, 0);
         self.left.scroll = false;
-        self.left.set_text(&text);
+        self.left.set_text(text);
         self.left.full_refresh();
-        self.footer.say(" any key to go back");
-        let _ = Input::getchr(None);
+        self.footer.say(foot);
+        let key = Input::getchr(None).unwrap_or_default();
         self.layout();
+        // The text covered the whole screen and the panes cover less of it:
+        // in page mode nothing else would ever paint over it again.
+        Crust::clear_screen();
+        key
     }
+}
+
+/// The help's key list. Plain lines, so the indent is what is written here:
+/// a `\` at the end of a line eats the spaces that start the next one.
+const HELP_KEYS: &str = "
+  t p v        text / page / split
+  m M          cycle the modes forward / back
+  j k ↑ ↓      scroll, turning the page at either end
+  Space b      next / previous page
+  z            page mode: full width, and back to the whole page
+  + -          zoom in / out, between the whole page and full width
+  gg G         first / last page
+  10g          go to page 10
+  / n N        find in this document, next, previous
+  s            find across every indexed document
+  o            open another document
+  r            re-read this document after it changed on disk
+  e            edit: the source if there is one, else a text sidecar
+  y Y          yank this page with a citation / the document's path
+  w W          widen / narrow the text pane in split mode
+  x            split mode: swap the sides, page left or right
+  Ctrl-B       borders: none, page, both, text
+  Ctrl-W       write the whole text beside the PDF (asks before overwriting)
+  Ctrl-A       ask Claude about this page
+  q            quit
+";
+
+const HELP_FILES: &str = "
+  Config is ~/.folio/config: mode, split, page_side, editor, build_tex, build_md, build_hl, build_html, library.
+  Position is remembered per document in ~/.folio/state.
+  Build the corpus index with: folio --index [dir]
+";
+
+/// A document's whole path, with links followed, as `Y` yanks it.
+fn full_path(path: &Path) -> String {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy().to_string()
+}
+
+/// The end of `s` that fits in `room` columns, with a mark where the front
+/// was cut. A path loses its front first: the file name is the part that
+/// tells two documents apart.
+fn tail_fit(s: &str, room: usize) -> String {
+    if crust::display_width(s) <= room { return s.to_string(); }
+    let mut kept: Vec<char> = Vec::new();
+    let mut w = 1; // the mark
+    for c in s.chars().rev() {
+        let cw = crust::display_width(c.encode_utf8(&mut [0; 4]));
+        if w + cw > room { break; }
+        w += cw;
+        kept.push(c);
+    }
+    kept.push('…');
+    kept.iter().rev().collect()
 }
 
 /// Pick a document with nothing on the command line. Shows what you read
@@ -1291,6 +1336,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The header shows the whole path. In a narrow window the front of the
+    /// path goes, never the file name, and never more than fits.
+    #[test]
+    fn a_long_path_keeps_its_end() {
+        assert_eq!(tail_fit("/a/b.pdf", 20), "/a/b.pdf");
+        assert_eq!(tail_fit("/a/b.pdf", 8), "/a/b.pdf");
+        assert_eq!(tail_fit("/home/someone/papers/b.pdf", 10), "…ers/b.pdf");
+        // Letters outside ASCII are cut whole, and counted by width.
+        let cut = tail_fit("/home/someone/blåbær/søknad.pdf", 12);
+        assert_eq!(cut, "…/søknad.pdf");
+        assert_eq!(crust::display_width(&cut), 12);
+    }
 
     #[test]
     fn modes_cycle_and_parse() {
