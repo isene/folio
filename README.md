@@ -125,7 +125,7 @@ mode = split
 split = 55
 border = 2
 editor = scribe
-library = /home/geir/Main
+library = /home/you/Documents
 ```
 
 ## License
