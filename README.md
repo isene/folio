@@ -14,6 +14,7 @@ A PDF is two documents in one: the words, and the page they were set on. Most re
 - **Three modes** on `t` `p` `v`, or cycled with `m`: the page's text full width, the page as an image full width, or text on the left with the page on the right. The config picks which one a document opens in.
 - **Edit the real document**: `e` opens the `.md`, `.tex` or `.html` sitting beside the PDF, rebuilds it on save, and reloads the page. A small change is a real edit, not a patch painted over the page.
 - **Sign a PDF**: `i` puts a picture on the page, a signature most often. Move it, size it, and `Enter` writes a signed copy beside the original. No office program needed.
+- **Chapters and links**: `c` lists the chapters the PDF carries, and Enter goes to one. `f` lists the links on the page. One inside the document turns to its page; a web or mail link opens in your browser or mail program. `Ctrl-O` goes back to where you were.
 - **Corpus search**: `s` searches every indexed PDF, not just the open one, and opens the document on the page that carries the phrase.
 - **Quote with a citation**: `y` copies the page's text with the file name and page number attached.
 - **Reads scans too**: a scanned PDF has no text layer, so folio says so and shows you the page.
@@ -60,6 +61,9 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 | `10g` | go to page 10 |
 | `/` `n` `N` | find in this document, next match, previous |
 | `s` | find across every indexed document |
+| `c` | the document's own chapter list; `Enter` goes to a chapter |
+| `f` | the links on this page; `Enter` follows one |
+| `Ctrl-O` | back to the page a chapter or a link was followed from |
 | `e` | edit the source if there is one, else a text sidecar |
 | `y` `Y` | yank this page with a citation / the document's path |
 | `o` | open another document |
@@ -101,6 +105,18 @@ Then `i` in page or split mode puts it on the page in front of you.
 What you see while placing it is what gets written: the same `mutool` script draws both. The original file is never changed. The picture's white stays see-through, so a scanned signature on white paper does not cover the line it sits on. The width you end on is kept as `stamp_width`, in percent of the page's width, so a signature is sized once.
 
 Zoom in first (`z`, `+`) for a finer placement. It is a picture on the page, as a pen would leave. It is not a digital signature.
+
+## Chapters and links
+
+Most PDFs made from LaTeX, Word or a web page carry their own chapter list, and their links work.
+
+- `c` shows that list, with the cursor on the chapter you are reading. `j` `k`, `PgDn` `PgUp` and `g` `G` move, `Enter` goes there, `q` leaves.
+- `f` shows the links on the page: the words each one sits on, and where it leads.
+- A link into the document turns to that page. `Ctrl-O` goes back, as many times as you jumped.
+- A web or mail link is handed to `xdg-open` (`open` on a Mac). You see the address before you open it.
+- No other kind of link is followed. A PDF can name a file or a program in a link, and folio starts neither.
+
+Both lists are read with `mutool` when you ask for them, so a document you only read costs nothing more.
 
 ## Corpus search
 

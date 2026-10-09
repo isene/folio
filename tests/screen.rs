@@ -32,14 +32,21 @@ fn screen_when(sock: &str, ready: impl Fn(&str) -> bool) -> String {
 /// A one-page PDF, built by hand so no tool is needed to make one. `page`
 /// is the page's box and, if wanted, its turn; `draw` is what is on it.
 fn tiny_pdf(page: &str, draw: &str) -> Vec<u8> {
-    let objs = [
+    pdf_of(&[
         "<</Type/Catalog/Pages 2 0 R>>".to_string(),
         "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
         format!("<</Type/Page/Parent 2 0 R{}/Contents 4 0 R\
                  /Resources<</Font<</F1 5 0 R>>>>>>", page),
-        format!("<</Length {}>>\nstream\n{}\nendstream", draw.len(), draw),
+        stream(draw),
         "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_string(),
-    ];
+    ])
+}
+
+fn stream(draw: &str) -> String { format!("<</Length {}>>\nstream\n{}\nendstream", draw.len(), draw) }
+
+/// A PDF from its objects, numbered from 1 in the order given. The first
+/// is the catalog.
+fn pdf_of(objs: &[String]) -> Vec<u8> {
     let mut out = b"%PDF-1.4\n".to_vec();
     let mut at = Vec::new();
     for (i, o) in objs.iter().enumerate() {
@@ -67,10 +74,13 @@ fn start(name: &str) -> (PathBuf, String) {
     (tmp, sock)
 }
 
-fn run(tmp: &Path, sock: &str) {
+fn run(tmp: &Path, sock: &str) { run_on(tmp, sock, "/usr/bin:/bin") }
+
+/// The same, with the folders folio finds its helpers in.
+fn run_on(tmp: &Path, sock: &str, path: &str) {
     tmux(sock, &["new-session", "-d", "-x", "110", "-y", "34", "-c", &tmp.to_string_lossy(),
         "env", "-i", &format!("HOME={}", tmp.join("home").display()), "TERM=xterm-256color",
-        "PATH=/usr/bin:/bin", FOLIO, "paper.pdf"]);
+        &format!("PATH={}", path), FOLIO, "paper.pdf"]);
 }
 
 /// Help covers the whole screen, and the page view paints less of it. The
@@ -214,4 +224,114 @@ fn a_stamp_lands_where_it_is_put() {
     assert!(untouched, "the original is not changed");
     assert_eq!(previews, 0, "no preview is left in the cache");
     assert!(saved.contains("stamp_width = "), "the new width is kept:\n{}", saved);
+}
+
+/// `c` lists the chapters the PDF carries and Enter goes to one, `f` lists
+/// the links on the page and Enter follows one, and Ctrl-O goes back.
+///
+/// A web link goes to the system's opener, which here is a stand-in that
+/// writes down what it was given. A link that names a program is refused:
+/// the address is the document's, and the document may be anybody's.
+#[test]
+fn chapters_and_links_lead_somewhere() {
+    use std::os::unix::fs::PermissionsExt;
+    if !has("tmux", "-V") || !has("mutool", "-v") {
+        eprintln!("skipped: needs tmux and mutool");
+        return;
+    }
+    let (tmp, sock) = start("links");
+    let page = |contents: usize, more: &str| format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]\
+        /Contents {} 0 R/Resources<</Font<</F1 9 0 R>>>>{}>>", contents, more);
+    let words = |y: usize, s: &str| format!("BT /F1 12 Tf 20 {} Td ({}) Tj ET ", y, s);
+    let link = |y: usize, to: &str| format!("<</Type/Annot/Subtype/Link/Rect[18 {} 140 {}]/Border[0 0 0]{}>>",
+        y - 5, y + 12, to);
+    std::fs::write(tmp.join("paper.pdf"), pdf_of(&[
+        "<</Type/Catalog/Pages 2 0 R/Outlines 10 0 R>>".to_string(),
+        "<</Type/Pages/Kids[3 0 R 5 0 R 7 0 R]/Count 3>>".to_string(),
+        page(4, "/Annots[14 0 R 15 0 R 16 0 R]"),
+        stream(&(words(150, "to the end") + &words(100, "the web page") + &words(50, "a program"))),
+        page(6, ""),
+        stream(&words(100, "page two")),
+        page(8, ""),
+        stream(&words(100, "page three")),
+        "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_string(),
+        "<</Type/Outlines/First 11 0 R/Last 13 0 R/Count 3>>".to_string(),
+        "<</Title(Start)/Parent 10 0 R/Next 13 0 R/First 12 0 R/Last 12 0 R/Count 1/Dest[3 0 R/Fit]>>".to_string(),
+        "<</Title(The middle)/Parent 11 0 R/Dest[5 0 R/Fit]>>".to_string(),
+        "<</Title(The end)/Parent 10 0 R/Prev 11 0 R/Dest[7 0 R/Fit]>>".to_string(),
+        link(150, "/Dest[7 0 R/Fit]"),
+        link(100, "/A<</S/URI/URI(https://example.org/paper)>>"),
+        link(50, "/A<</S/URI/URI(file:///usr/bin/true)>>"),
+    ])).unwrap();
+    let bin = tmp.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let opened = tmp.join("home/opened");
+    std::fs::write(bin.join("xdg-open"), "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$HOME/opened\"\n").unwrap();
+    std::fs::set_permissions(bin.join("xdg-open"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    run_on(&tmp, &sock, &format!("{}:/usr/bin:/bin", bin.display()));
+
+    screen_when(&sock, |s| s.contains("page 1/3"));
+    // The footer's key list says "Chapters" too, so the wait is for the
+    // list's own heading, which counts its rows.
+    tmux(&sock, &["send-keys", "c"]);
+    let chapters = screen_when(&sock, |s| s.contains(" of 3"));
+    tmux(&sock, &["send-keys", "j", "Enter"]);
+    // The footer is repainted last, so its words are the screen done.
+    let middle = screen_when(&sock, |s| s.contains("page 2/3") && s.contains("Ctrl-O goes back"));
+    tmux(&sock, &["send-keys", "c"]);
+    let on_middle = screen_when(&sock, |s| s.contains(" of 3"));
+    tmux(&sock, &["send-keys", "q"]);
+    screen_when(&sock, |s| !s.contains(" of 3") && s.contains("q:Quit"));
+    tmux(&sock, &["send-keys", "f"]);
+    let none = screen_when(&sock, |s| s.contains("no links on this page"));
+    tmux(&sock, &["send-keys", "C-o"]);
+    screen_when(&sock, |s| s.contains("page 1/3"));
+
+    tmux(&sock, &["send-keys", "f"]);
+    let links = screen_when(&sock, |s| s.contains("Links on this page"));
+    tmux(&sock, &["send-keys", "Enter"]);
+    let end = screen_when(&sock, |s| s.contains("page 3/3"));
+    tmux(&sock, &["send-keys", "C-o"]);
+    screen_when(&sock, |s| s.contains("page 1/3"));
+    tmux(&sock, &["send-keys", "C-o"]);
+    let no_more = screen_when(&sock, |s| s.contains("no jump to go back from"));
+
+    tmux(&sock, &["send-keys", "f"]);
+    screen_when(&sock, |s| s.contains("Links on this page"));
+    tmux(&sock, &["send-keys", "j", "Enter"]);
+    let web = screen_when(&sock, |s| s.contains("opened https://example.org/paper"));
+    let mut handed = String::new();
+    for _ in 0..100 {
+        handed = std::fs::read_to_string(&opened).unwrap_or_default();
+        if !handed.is_empty() { break; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    tmux(&sock, &["send-keys", "f"]);
+    screen_when(&sock, |s| s.contains("Links on this page"));
+    tmux(&sock, &["send-keys", "G", "Enter"]);
+    let refused = screen_when(&sock, |s| s.contains("web and mail links only"));
+    std::thread::sleep(Duration::from_millis(300));
+    let handed_after = std::fs::read_to_string(&opened).unwrap_or_default();
+    tmux(&sock, &["kill-server"]);
+    std::fs::remove_dir_all(&tmp).ok();
+
+    let row = |screen: &str, has: &str| screen.lines().find(|l| l.contains(has)).unwrap_or("").to_string();
+    assert!(chapters.contains("Chapters  1 of 3"), "the list opens on the chapter being read:\n{}", chapters);
+    assert!(row(&chapters, "Start").starts_with("→ Start") && row(&chapters, "Start").trim_end().ends_with("p.1"),
+        "a chapter and its page:\n{}", chapters);
+    assert!(row(&chapters, "The middle").starts_with("    The middle"), "a part sits under its chapter:\n{}", chapters);
+    assert!(middle.contains("Ctrl-O goes back") && !middle.contains(" of 3"),
+        "Enter goes to the chapter and the list is gone:\n{}", middle);
+    assert!(on_middle.contains("Chapters  2 of 3"), "on page 2 the list opens on its chapter:\n{}", on_middle);
+    assert!(none.contains("page 2/3"), "a page with no links says so:\n{}", none);
+    assert!(row(&links, "to the end").trim_end().ends_with("p.3"), "a link inside the document:\n{}", links);
+    assert!(row(&links, "the web page").trim_end().ends_with("https://example.org/paper"),
+        "a web link shows its address:\n{}", links);
+    assert!(end.contains("page 3/3"), "the first link leads to the last page:\n{}", end);
+    assert!(no_more.contains("page 1/3"), "Ctrl-O went back, and then had nowhere to go:\n{}", no_more);
+    assert!(web.contains("page 1/3"), "a web link leaves the page where it was:\n{}", web);
+    assert_eq!(handed, "https://example.org/paper\n", "the opener gets the address, and only that");
+    assert!(refused.contains("file:///usr/bin/true"), "a link to a program is named and refused:\n{}", refused);
+    assert_eq!(handed_after, handed, "and nothing is started for it");
 }

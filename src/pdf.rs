@@ -161,6 +161,116 @@ pub fn prefetch_bg(path: &Path, page: usize, pages: usize, height_px: u32) {
     });
 }
 
+/// What `mutool run` reads a document's chapter list and a page's links
+/// with. Asked for on a key, so a document that is only read never runs it.
+///
+/// Arguments: pdf, then `outline`, or `links` and a page (from 0). One line
+/// per find, its fields split by tabs:
+///   O  level  page  title
+///   L  page or address  the words the link sits on
+/// A page is counted from 0, and is -1 for a place the document lacks.
+const NAV_JS: &str = r#"
+var doc = Document.openDocument(scriptArgs[0]);
+function pageOf(uri) {
+    try {
+        var where = doc.resolveLink(uri);
+        if (typeof where === "number") return where;
+        if (where && typeof where.page === "number") return where.page;
+    } catch (e) {}
+    return -1;
+}
+function flat(s) { return String(s).replace(/\s+/g, " ").trim(); }
+if (scriptArgs[1] == "outline") {
+    (function walk(items, level) {
+        for (var i = 0; items && i < items.length; i++) {
+            var it = items[i];
+            var page = (typeof it.page === "number") ? it.page : pageOf(it.uri);
+            print("O\t" + level + "\t" + page + "\t" + flat(it.title || ""));
+            walk(it.down, level + 1);
+        }
+    })(doc.loadOutline(), 0);
+} else {
+    var page = doc.loadPage(parseInt(scriptArgs[2]));
+    var links = page.getLinks();
+    var text = links.length ? page.toStructuredText() : null;
+    var last = null, lastY = 0, out = [];
+    for (var i = 0; i < links.length; i++) {
+        var l = links[i];
+        var b = l.bounds || l.getBounds(), uri = l.uri || l.getURI();
+        var mid = (b[1] + b[3]) / 2, words = "";
+        try { words = flat(text.copy([b[0] + 1, mid], [b[2] - 1, mid])); } catch (e) {}
+        // A link broken over two lines is two boxes with one address.
+        if (uri === last && mid > lastY + 1 && out.length) {
+            out[out.length - 1][1] += " " + words;
+        } else {
+            var outside = /^[a-z][a-z0-9+.-]*:/i.test(uri);
+            out.push([outside ? flat(uri) : pageOf(uri), words]);
+        }
+        last = uri; lastY = mid;
+    }
+    for (var j = 0; j < out.length; j++) print("L\t" + out[j][0] + "\t" + out[j][1]);
+}
+"#;
+
+/// One line of the document's own chapter list.
+pub struct Chapter { pub level: usize, pub page: usize, pub title: String }
+
+/// Where a link leads: a page of this document (from 0), or an address
+/// outside it, such as a web page.
+#[derive(Debug, PartialEq)]
+pub enum Target { Page(usize), Address(String) }
+
+pub struct Link { pub words: String, pub to: Target }
+
+/// A mutool script as a file in the cache. Named by its own text, so a
+/// newer folio never runs an older script.
+fn script(name: &str, text: &str) -> Result<PathBuf, String> {
+    let file = cache_dir().join(format!("{}-{:016x}.js", name, hash(text)));
+    if !file.exists() {
+        std::fs::write(&file, text).map_err(|e| format!("{}: {}", file.display(), e))?;
+    }
+    Ok(file)
+}
+
+fn nav(pdf: &Path, what: &[&str]) -> Result<String, String> {
+    let o = Command::new("mutool").arg("run").arg(script("nav", NAV_JS)?).arg(pdf).args(what)
+        .output().map_err(|e| format!("mutool: {}", e))?;
+    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// The chapter list a PDF carries, in the order it gives it. Empty when it
+/// has none.
+pub fn chapters(pdf: &Path) -> Result<Vec<Chapter>, String> {
+    Ok(nav(pdf, &["outline"])?.lines().filter_map(chapter_line).collect())
+}
+
+/// The links on one page, top to bottom.
+pub fn links(pdf: &Path, page: usize) -> Result<Vec<Link>, String> {
+    Ok(nav(pdf, &["links", &page.to_string()])?.lines().filter_map(link_line).collect())
+}
+
+/// A chapter that points at no page of the document is left out: there is
+/// nowhere to go.
+fn chapter_line(line: &str) -> Option<Chapter> {
+    let mut f = line.splitn(4, '\t');
+    if f.next()? != "O" { return None; }
+    let level = f.next()?.parse().ok()?;
+    let page = f.next()?.parse().ok()?;
+    Some(Chapter { level, page, title: f.next()?.to_string() })
+}
+
+fn link_line(line: &str) -> Option<Link> {
+    let mut f = line.splitn(3, '\t');
+    if f.next()? != "L" { return None; }
+    let to = f.next()?;
+    let to = match to.parse::<usize>() {
+        Ok(page) => Target::Page(page),
+        Err(_) if to.contains(':') => Target::Address(to.to_string()),
+        Err(_) => return None,
+    };
+    Some(Link { words: f.next().unwrap_or("").to_string(), to })
+}
+
 /// What `mutool run` draws a picture onto a page with. mutool is here
 /// already for the page images, and it edits a PDF too, so a stamp costs no
 /// new tool and no PDF code of folio's own.
@@ -245,11 +355,7 @@ pub enum StampTo<'a> { Png(&'a Path, u32), Pdf(&'a Path) }
 pub fn stamp(pdf: &Path, page: usize, image: &Path, at: (f32, f32, f32), to: StampTo)
     -> Result<(), String>
 {
-    // Named by its own text, so a newer folio never runs an older script.
-    let script = cache_dir().join(format!("stamp-{:016x}.js", hash(STAMP_JS)));
-    if !script.exists() {
-        std::fs::write(&script, STAMP_JS).map_err(|e| format!("{}: {}", script.display(), e))?;
-    }
+    let script = script("stamp", STAMP_JS)?;
     let (kind, out, px) = match to {
         StampTo::Png(p, h) => ("png", p, h.to_string()),
         StampTo::Pdf(p) => ("pdf", p, String::new()),
@@ -410,6 +516,23 @@ mod tests {
         // But it still renders, which is why Page mode is not optional.
         assert!(render_page(lone, 0, 400).is_some());
         println!("scan: {} pages, {} chars of text", pages.len(), chars);
+    }
+
+    #[test]
+    fn a_chapter_line_and_a_link_line_are_read() {
+        let c = chapter_line("O\t1\t12\tA part\twith a tab").unwrap();
+        assert_eq!((c.level, c.page, c.title.as_str()), (1, 12, "A part\twith a tab"));
+        assert!(chapter_line("O\t0\t-1\tPoints nowhere").is_none());
+        assert!(chapter_line("L\t3\twords").is_none());
+        assert!(chapter_line("").is_none());
+
+        let l = link_line("L\t3\tSection 3").unwrap();
+        assert_eq!((l.to, l.words.as_str()), (Target::Page(3), "Section 3"));
+        let l = link_line("L\thttps://example.org/a\tthe paper online").unwrap();
+        assert_eq!(l.to, Target::Address("https://example.org/a".into()));
+        assert_eq!(link_line("L\tmailto:alice@example.org").unwrap().words, "");
+        assert!(link_line("L\t-1\tno such place").is_none());
+        assert!(link_line("O\t0\t1\tA chapter").is_none());
     }
 }
 

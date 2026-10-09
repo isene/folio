@@ -302,6 +302,10 @@ struct App {
     g_pending: bool,
     /// Set while `i` has a picture on the page waiting to be placed.
     stamp: Option<Stamp>,
+    /// The document's chapter list, read the first time it is asked for.
+    chapters: Option<Vec<pdf::Chapter>>,
+    /// The pages left by a jump, newest last, for the way back.
+    back: Vec<usize>,
 }
 
 impl App {
@@ -323,6 +327,7 @@ impl App {
             img: None, shown: None, live: Vec::new(), status: None,
             needle: String::new(), hits: Vec::new(), hit: 0,
             count: String::new(), g_pending: false, stamp: None,
+            chapters: None, back: Vec::new(),
         };
         app.layout();
         app
@@ -599,7 +604,7 @@ impl App {
                 " STAMP  h/j/k/l:Move  H/J/K/L:Fine  +/-:Size  Enter:Write a copy  Esc:Cancel",
                 HIT_FG),
             None => style::fg(
-                " q:Quit  t/p/v:Mode  x:Swap  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
+                " q:Quit  t/p/v:Mode  x:Swap  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  c:Chapters  f:Links  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
                 DIM_FG),
         };
         let version = format!("folio v{} ", VERSION);
@@ -877,6 +882,8 @@ impl App {
         self.text = pdf::text_pages(&self.path);
         self.pages = pdf::page_count(&self.path);
         self.page = self.page.min(self.pages.saturating_sub(1));
+        self.chapters = None;
+        self.back.clear();
         self.clear_image();
     }
 
@@ -972,6 +979,150 @@ impl App {
             }
         }
         self.set_status("", DIM_FG);
+    }
+
+    /// `c`: the document's own chapter list. Enter goes to a chapter.
+    fn chapters(&mut self) {
+        if self.chapters.is_none() {
+            // A second or so for a book of 700 pages, and only this once.
+            self.footer.say(&style::fg(" reading the chapter list", DIM_FG));
+            match pdf::chapters(&self.path) {
+                Ok(list) => self.chapters = Some(list),
+                Err(e) => { self.set_status(&e, 196); return; }
+            }
+        }
+        let list = self.chapters.as_deref().unwrap_or(&[]);
+        if list.is_empty() {
+            self.set_status("this document has no chapter list", DIM_FG);
+            return;
+        }
+        let rows: Vec<(String, String)> = list.iter()
+            .map(|c| (format!("{}{}", "  ".repeat(c.level.min(8)), c.title), format!("p.{}", c.page + 1)))
+            .collect();
+        let pages: Vec<usize> = list.iter().map(|c| c.page).collect();
+        let here = chapter_at(&pages, self.page);
+        if let Some(i) = self.pick("Chapters", &rows, here) { self.jump(pages[i]); }
+    }
+
+    /// `f`: the links on this page. Enter follows one: to its page, or out
+    /// to the browser or the mail program.
+    fn links(&mut self) {
+        let links = match pdf::links(&self.path, self.page) {
+            Ok(links) => links,
+            Err(e) => { self.set_status(&e, 196); return; }
+        };
+        if links.is_empty() {
+            self.set_status("no links on this page", DIM_FG);
+            return;
+        }
+        let rows: Vec<(String, String)> = links.iter().map(|l| (l.words.clone(), match &l.to {
+            pdf::Target::Page(p) => format!("p.{}", p + 1),
+            pdf::Target::Address(a) => a.clone(),
+        })).collect();
+        let Some(i) = self.pick("Links on this page", &rows, 0) else { return };
+        match &links[i].to {
+            pdf::Target::Page(p) => self.jump(*p),
+            pdf::Target::Address(a) => self.open_address(a),
+        }
+    }
+
+    /// Hand a web or mail address to the system's opener. The address is
+    /// the document's, not the reader's, so nothing else is started.
+    fn open_address(&mut self, address: &str) {
+        if !opens_outside(address) {
+            self.set_status(&format!("folio follows web and mail links only: {}", address), 196);
+            return;
+        }
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        use std::process::Stdio;
+        let started = std::process::Command::new(opener).arg(address)
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        match started {
+            Ok(mut child) => {
+                // Waited for on a thread of its own, so it leaves no dead
+                // process behind and reading does not wait for a browser.
+                std::thread::spawn(move || { let _ = child.wait(); });
+                self.set_status(&format!("opened {}", address), 46);
+            }
+            Err(e) => self.set_status(&format!("{}: {}", opener, e), 196),
+        }
+    }
+
+    /// Go to a page from the chapter list or a link, and note the page
+    /// left, so Ctrl-O finds the way back.
+    fn jump(&mut self, page: usize) {
+        let page = page.min(self.pages.saturating_sub(1));
+        if page == self.page {
+            self.set_status(&format!("that is this page, {}", page + 1), DIM_FG);
+            return;
+        }
+        self.back.push(self.page);
+        self.goto(page);
+        self.set_status(&format!("page {}, Ctrl-O goes back", page + 1), 46);
+    }
+
+    fn jump_back(&mut self) {
+        match self.back.pop() {
+            Some(page) => self.goto(page),
+            None => self.set_status("no jump to go back from", DIM_FG),
+        }
+    }
+
+    /// A list over the whole screen, and the row Enter was pressed on.
+    /// A row is its words and where they lead; `at` is the row the cursor
+    /// starts on.
+    fn pick(&mut self, title: &str, rows: &[(String, String)], at: usize) -> Option<usize> {
+        self.clear_image();
+        let last = rows.len().saturating_sub(1);
+        let mut at = at.min(last);
+        let mut top = usize::MAX;
+        let mut fresh = true;
+        let picked = loop {
+            if fresh {
+                self.layout();
+                self.left = Pane::new(1, 2, self.cols, self.rows.saturating_sub(2), TEXT_BG_FG, 0);
+                self.left.scroll = false;
+            }
+            // Three rows go to the title and the air around it.
+            let h = (self.left.h as usize).saturating_sub(3).max(1);
+            if top == usize::MAX { top = at.saturating_sub(h / 2); }
+            if at < top { top = at; }
+            if at >= top + h { top = at + 1 - h; }
+            let width = (self.cols as usize).saturating_sub(4);
+            let mut out = format!("\n{}\n\n", style::bold(&format!("  {}  {} of {}", title, at + 1, rows.len())));
+            for (i, (words, to)) in rows.iter().enumerate().skip(top).take(h) {
+                let (words, gap, to) = list_row(words, to, width);
+                if i == at {
+                    out.push_str(&style::fg(&format!("→ {}{}{}\n", words, gap, to), HIT_FG));
+                } else {
+                    out.push_str(&format!("  {}{}{}\n", words, gap, style::fg(&to, DIM_FG)));
+                }
+            }
+            self.left.set_text(&out);
+            if fresh {
+                self.left.full_refresh();
+                self.footer.say(&style::fg(" j/k:Move  PgDn/PgUp:Page  g/G:First/Last  Enter:Go  q:Back", DIM_FG));
+            } else {
+                self.left.refresh();
+            }
+            fresh = false;
+            match Input::getchr(None).unwrap_or_default().as_str() {
+                "j" | "DOWN" => at = (at + 1).min(last),
+                "k" | "UP" => at = at.saturating_sub(1),
+                "PgDOWN" => at = (at + h).min(last),
+                "PgUP" => at = at.saturating_sub(h),
+                "g" | "HOME" => at = 0,
+                "G" | "END" => at = last,
+                "ENTER" | "l" | "RIGHT" => break Some(at),
+                "q" | "ESC" | "h" | "LEFT" | "c" | "f" => break None,
+                "RESIZE" => { Crust::clear_screen(); fresh = true; }
+                _ => {}
+            }
+        };
+        self.layout();
+        // The list covered the whole screen and the panes cover less of it.
+        Crust::clear_screen();
+        picked
     }
 
     /// `i`: put the configured picture on the page, to be moved into place.
@@ -1103,6 +1254,9 @@ const HELP_KEYS: &str = "
   10g          go to page 10
   / n N        find in this document, next, previous
   s            find across every indexed document
+  c            the document's chapter list: Enter goes to a chapter
+  f            the links on this page: Enter follows one
+  Ctrl-O       back to the page a chapter or a link was followed from
   o            open another document
   r            re-read this document after it changed on disk
   e            edit: the source if there is one, else a text sidecar
@@ -1122,6 +1276,37 @@ const HELP_FILES: &str = "
   Position is remembered per document in ~/.folio/state.
   Build the corpus index with: folio --index [dir]
 ";
+
+/// The chapter a page is in: the last one that starts on or before it.
+fn chapter_at(starts: &[usize], page: usize) -> usize {
+    starts.iter().rposition(|&p| p <= page).unwrap_or(0)
+}
+
+/// The addresses folio hands to the system: web pages and mail. A PDF can
+/// name any program or file in a link, and none of those are started.
+fn opens_outside(address: &str) -> bool {
+    let a = address.to_ascii_lowercase();
+    ["http://", "https://", "mailto:"].iter().any(|s| a.starts_with(s) && a.len() > s.len())
+}
+
+/// Shorten to `room` columns, with a mark where text was cut.
+fn cut_to(s: &str, room: usize) -> String {
+    if crust::display_width(s) <= room { return s.to_string(); }
+    let mut cut = s.to_string();
+    while crust::display_width(&cut) + 1 > room && cut.pop().is_some() {}
+    if room > 0 { cut.push('…'); }
+    cut
+}
+
+/// One row of a list, to `width` columns: the words at the left, the gap,
+/// and where they lead at the right. The right part gets half at most.
+fn list_row(words: &str, to: &str, width: usize) -> (String, String, String) {
+    let to = cut_to(to, width / 2);
+    let room = width.saturating_sub(crust::display_width(&to) + 2);
+    let words = cut_to(words, room);
+    let gap = " ".repeat(width.saturating_sub(crust::display_width(&words) + crust::display_width(&to)));
+    (words, gap, to)
+}
 
 /// A document's whole path, with links followed, as `Y` yanks it.
 fn full_path(path: &Path) -> String {
@@ -1461,6 +1646,9 @@ fn main() {
             "n" => app.next_hit(false),
             "N" => app.next_hit(true),
             "s" => app.corpus(),
+            "c" => app.chapters(),
+            "f" => app.links(),
+            "C-O" => app.jump_back(),
             "o" => app.open_another(),
             "r" => {
                 app.reload();
@@ -1686,5 +1874,46 @@ mod tests {
         assert!(path.extension().unwrap() == "pdf");
         println!("first hit: {} p.{}", path.display(), page + 1);
         assert!(index_search("zzqqxx-not-a-word").is_empty());
+    }
+
+    #[test]
+    fn the_list_opens_on_the_chapter_being_read() {
+        let starts = [0, 4, 4, 9, 20];
+        assert_eq!(chapter_at(&starts, 0), 0);
+        assert_eq!(chapter_at(&starts, 3), 0);
+        assert_eq!(chapter_at(&starts, 4), 2, "the deepest heading that starts on the page");
+        assert_eq!(chapter_at(&starts, 15), 3);
+        assert_eq!(chapter_at(&starts, 99), 4);
+        assert_eq!(chapter_at(&[5, 9], 2), 0, "before the first chapter");
+    }
+
+    #[test]
+    fn only_web_and_mail_links_leave_folio() {
+        assert!(opens_outside("https://example.org/paper"));
+        assert!(opens_outside("HTTP://example.org"));
+        assert!(opens_outside("mailto:alice@example.org"));
+        for no in ["file:///etc/passwd", "javascript:alert(1)", "smb://host/share", "https://",
+                   "/usr/bin/true", "-o", "ftp://example.org/x", ""] {
+            assert!(!opens_outside(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_list_row_fits_its_width_and_keeps_the_page_at_the_right() {
+        let (words, gap, to) = list_row("First chapter", "p.12", 30);
+        assert_eq!(format!("{words}{gap}{to}"), "First chapter             p.12");
+        let long = "A chapter with a title far too long for the row it is on";
+        let (words, gap, to) = list_row(long, "p.3", 30);
+        assert_eq!(crust::display_width(&format!("{words}{gap}{to}")), 30);
+        assert!(words.ends_with('…') && to == "p.3");
+        // A long address is cut too, and leaves the words half the row.
+        let (words, gap, to) = list_row("the paper online", "https://example.org/a/very/long/address/indeed", 40);
+        assert_eq!(crust::display_width(&format!("{words}{gap}{to}")), 40);
+        assert_eq!(words, "the paper online");
+        assert!(to.ends_with('…') && crust::display_width(&to) == 20);
+        // Wide letters count by their width, and nothing breaks at width 0.
+        let (words, _, _) = list_row("日本語の章の名前", "p.1", 12);
+        assert!(crust::display_width(&words) <= 7);
+        assert_eq!(list_row("x", "p.1", 0), (String::new(), String::new(), String::new()));
     }
 }
