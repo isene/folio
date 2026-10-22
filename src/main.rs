@@ -677,8 +677,22 @@ impl App {
             _ => {
                 let p = if default_last { self.pages.saturating_sub(1) } else { 0 };
                 self.goto(p);
+                // The foot of the last page and the top of the first, as in
+                // scribe. Going by page alone, a one-page PDF never moved.
+                if default_last { self.to_foot(); } else { self.scroll = 0; }
             }
         }
+    }
+
+    /// The last screenful of the page's text, or in page mode the bottom of
+    /// a zoomed page.
+    fn to_foot(&mut self) {
+        if self.mode == Mode::Page {
+            self.img_scroll = self.zoomed_rows().saturating_sub(self.right.h);
+            return;
+        }
+        let w = self.left.w.saturating_sub(1).max(8) as usize;
+        self.scroll = wrap(self.page_text(), w).len().saturating_sub(self.left.h as usize);
     }
 
     fn goto(&mut self, page: usize) {
@@ -1250,7 +1264,7 @@ const HELP_KEYS: &str = "
   Space b      next / previous page
   z            page mode: full width, and back to the whole page
   + -          zoom in / out, between the whole page and full width
-  gg G         first / last page
+  gg G         top of the first page / foot of the last
   10g          go to page 10
   / n N        find in this document, next, previous
   s            find across every indexed document
@@ -1634,7 +1648,7 @@ fn main() {
             }
             " " | "SPACE" | "l" | "RIGHT" => { let p = app.page + 1; app.goto(p); }
             "b" | "BACK" | "h" | "LEFT" => { let p = app.page.saturating_sub(1); app.goto(p); }
-            // `10g` goes to page ten, `gg` to the front, `G` to the end.
+            // `10g` goes to page ten, `gg` to the top, `G` to the foot.
             "g" => {
                 if !app.count.is_empty() { app.goto_counted(false); }
                 else if app.g_pending { app.goto_counted(false); }

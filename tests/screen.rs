@@ -335,3 +335,31 @@ fn chapters_and_links_lead_somewhere() {
     assert!(refused.contains("file:///usr/bin/true"), "a link to a program is named and refused:\n{}", refused);
     assert_eq!(handed_after, handed, "and nothing is started for it");
 }
+
+/// `G` went to the last page and `gg` to the first, so in a one-page PDF
+/// neither moved. Now `G` shows the foot of the last page and `gg` the top.
+#[test]
+fn g_goes_to_the_foot_and_gg_to_the_top() {
+    if !has("tmux", "-V") || !has("pdftotext", "-v") {
+        eprintln!("skipped: needs tmux and pdftotext");
+        return;
+    }
+    let (tmp, sock) = start("foot");
+    std::fs::write(tmp.join("home/.folio/config"), "mode = text\n").unwrap();
+    let rows: String = (1..=60).map(|i| format!("(row {:02}) Tj T* ", i)).collect();
+    std::fs::write(tmp.join("paper.pdf"),
+        tiny_pdf("/MediaBox[0 0 300 800]", &format!("BT /F1 10 Tf 12 TL 20 780 Td {}ET", rows))).unwrap();
+    run(&tmp, &sock);
+
+    let top = screen_when(&sock, |s| s.contains("row 01"));
+    tmux(&sock, &["send-keys", "G"]);
+    let foot = screen_when(&sock, |s| s.contains("row 60"));
+    tmux(&sock, &["send-keys", "g", "g"]);
+    let back = screen_when(&sock, |s| s.contains("row 01"));
+    tmux(&sock, &["kill-server"]);
+    std::fs::remove_dir_all(&tmp).ok();
+
+    assert!(!top.contains("row 60"), "the page is taller than the pane:\n{}", top);
+    assert!(foot.contains("row 60") && !foot.contains("row 01"), "G shows the foot:\n{}", foot);
+    assert!(back.contains("row 01"), "gg shows the top again:\n{}", back);
+}

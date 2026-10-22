@@ -57,7 +57,7 @@ Needs `pdftotext` and `pdfinfo` (poppler-utils) for text, and `mutool` (mupdf-to
 | `Space` `b` | next / previous page |
 | `z` | in page mode: full width, and back to the whole page |
 | `+` `-` | zoom in / out, between the whole page and full width |
-| `gg` `G` | first / last page (also Home / End) |
+| `gg` `G` | top of the first page / foot of the last (also Home / End) |
 | `10g` | go to page 10 |
 | `/` `n` `N` | find in this document, next match, previous |
 | `s` | find across every indexed document |
