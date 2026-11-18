@@ -607,10 +607,7 @@ impl App {
                 " q:Quit  t/p/v:Mode  x:Swap  j/k:Scroll  Space/b:Page  z/+/-:Zoom  10g:Goto  /:Find  c:Chapters  f:Links  e:Edit  y/Y:Yank  s:Corpus  ?:Help",
                 DIM_FG),
         };
-        let version = format!("folio v{} ", VERSION);
-        let pad = (self.cols as usize)
-            .saturating_sub(crust::display_width(&left) + version.len());
-        self.footer.say(&format!("{}{}{}", left, " ".repeat(pad), style::fg(&version, DIM_FG)));
+        self.footer.say(&crust::with_version(&left, self.cols as usize, "folio", VERSION));
     }
 
     fn set_status(&mut self, msg: &str, c: u8) { self.status = Some((msg.to_string(), c)); }
